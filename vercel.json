@@ -1,7 +1,13 @@
 {
   "outputDirectory": "compass-csr/dist",
   "buildCommand": "cd compass-csr && npm install && npm run build",
+  "functions": {
+    "api/anthropic.js": {
+      "runtime": "nodejs20.x"
+    }
+  },
   "rewrites": [
-    { "source": "/api/anthropic/(.*)", "destination": "/api/anthropic" }
+    { "source": "/api/anthropic/(.*)", "destination": "/api/anthropic" },
+    { "source": "/(.*)", "destination": "/index.html" }
   ]
 }
