@@ -1,0 +1,1 @@
+{"outputDirectory":"compass-csr/dist","buildCommand":"cd compass-csr && npm install && npm run build"}
