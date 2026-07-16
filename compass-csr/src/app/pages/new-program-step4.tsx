@@ -4,11 +4,12 @@ import { Download, Share2, Save, ChevronRight, Sparkles, ArrowLeft, AlertCircle 
 import { toast } from "sonner";
 import { Button } from "../components/ui/button";
 import { WizardShell } from "../components/wizard-shell";
-import { BlueprintView } from "../components/blueprint-view";
+import { BlueprintView, type BlueprintViewHandle } from "../components/blueprint-view";
 import { SaveProgramDialog } from "../components/save-program-dialog";
 import { useWizard } from "../context/wizard-context";
 import { usePrograms } from "../context/programs-context";
-import { suggestProgramName, formatProgramDate } from "../lib/blueprint-data";
+import { suggestProgramName } from "../lib/blueprint-data";
+import { buildPdfFilename } from "../lib/pdf-export";
 import type { BlueprintData } from "../types/program";
 
 // ─── Status messages shown during loading ─────────────────────────────────────
@@ -21,7 +22,7 @@ const STATUS_MESSAGES = [
   "Almost there…",
 ];
 
-// ─── The system prompt sent to Claude ────────────────────────────────────────
+// ─── System prompt sent to Claude ─────────────────────────────────────────────
 
 function buildSystemPrompt(): string {
   return `You are an expert CSR (Corporate Social Responsibility) strategist with deep knowledge of nonprofit partnerships, employee engagement programs, ESG reporting, and cause marketing. You help mid-market companies design authentic, effective CSR programs.
@@ -89,7 +90,7 @@ The JSON must match this exact shape:
     "body": "<2-3 sentences of sample website copy mentioning the company name and their specific program focus>"
   },
   "roles": [
-    { "role": "<role title>", "responsibility": "<what they own>", "time": "<e.g. 4–6 hrs/week>" },
+    { "role": "<role title>", "responsibility": "<what they own>", "time": "<e.g. 4-6 hrs/week>" },
     { "role": "...", "responsibility": "...", "time": "..." },
     { "role": "...", "responsibility": "...", "time": "..." },
     { "role": "...", "responsibility": "...", "time": "..." },
@@ -166,7 +167,7 @@ function ErrorScreen({ message, onRetry }: { message: string; onRetry: () => voi
   );
 }
 
-// ─── Blueprint page (shown after generation) ──────────────────────────────────
+// ─── Blueprint page ───────────────────────────────────────────────────────────
 
 function BlueprintPage({
   blueprint,
@@ -179,6 +180,7 @@ function BlueprintPage({
   const { step1, step2, step3 } = useWizard();
   const { saveProgram } = usePrograms();
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
+  const blueprintRef = useRef<BlueprintViewHandle>(null);
 
   function handleSave(name: string) {
     saveProgram({
@@ -190,15 +192,20 @@ function BlueprintPage({
     navigate("/my-programs");
   }
 
+  function handleDownloadPdf() {
+    void blueprintRef.current?.downloadPdf(buildPdfFilename("Compass-Blueprint", suggestedName));
+  }
+
   return (
     <>
       <BlueprintView
+        ref={blueprintRef}
         programName={suggestedName}
         companyName={step1.companyName}
         blueprint={blueprint}
         headerActions={
           <div className="flex items-center gap-2 flex-shrink-0 flex-wrap">
-            <Button variant="outline" size="sm" className="gap-1.5 text-sm">
+            <Button variant="outline" size="sm" className="gap-1.5 text-sm" onClick={handleDownloadPdf}>
               <Download className="h-4 w-4" /> Download PDF
             </Button>
             <Button variant="outline" size="sm" className="gap-1.5 text-sm">
@@ -221,7 +228,7 @@ function BlueprintPage({
               return and manage it at any time.
             </p>
             <div className="flex items-center gap-3">
-              <Button variant="outline" size="sm" className="gap-1.5">
+              <Button variant="outline" size="sm" className="gap-1.5" onClick={handleDownloadPdf}>
                 <Download className="h-4 w-4" /> Download PDF
               </Button>
               <Button
@@ -263,12 +270,10 @@ export function NewProgramStep4() {
     setError(null);
     setProgress(0);
 
-    // Animate progress bar while waiting for API
     const startTime = Date.now();
-    const estimatedDuration = 12000; // 12 seconds estimated
+    const estimatedDuration = 15000;
     const progressInterval = setInterval(() => {
       const elapsed = Date.now() - startTime;
-      // Goes to 90% during the call, jumps to 100 when done
       const pct = Math.min(90, Math.round((elapsed / estimatedDuration) * 90));
       setProgress(pct);
     }, 300);
@@ -282,7 +287,7 @@ ${JSON.stringify(payload, null, 2)}
 
 Return ONLY the JSON blueprint object. No explanation, no markdown, no backticks.`;
 
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
+      const response = await fetch("/api/anthropic/v1/messages", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -306,13 +311,11 @@ Return ONLY the JSON blueprint object. No explanation, no markdown, no backticks
 
       const data = await response.json();
 
-      // Extract text from response
       const rawText = data.content
         ?.filter((block: { type: string }) => block.type === "text")
         .map((block: { text: string }) => block.text)
         .join("") ?? "";
 
-      // Strip any accidental markdown fences
       const cleaned = rawText
         .replace(/^```json\s*/i, "")
         .replace(/^```\s*/i, "")
@@ -321,13 +324,11 @@ Return ONLY the JSON blueprint object. No explanation, no markdown, no backticks
 
       const parsed = JSON.parse(cleaned) as BlueprintData;
 
-      // Ensure generatedAt is set
       if (!parsed.generatedAt) {
         parsed.generatedAt = new Date().toISOString();
       }
 
       setProgress(100);
-      // Small delay so user sees 100% before blueprint appears
       setTimeout(() => setBlueprint(parsed), 400);
 
     } catch (err) {
@@ -341,7 +342,6 @@ Return ONLY the JSON blueprint object. No explanation, no markdown, no backticks
     }
   }
 
-  // Trigger generation once on mount
   useEffect(() => {
     if (!hasFetched.current) {
       hasFetched.current = true;

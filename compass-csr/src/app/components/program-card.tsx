@@ -1,6 +1,7 @@
 import { Link, useNavigate } from "react-router";
 import {
   Archive,
+  ArchiveRestore,
   Copy,
   Eye,
   FileText,
@@ -34,18 +35,31 @@ import { usePrograms } from "../context/programs-context";
 import { formatProgramDate } from "../lib/blueprint-data";
 import type { SavedProgram } from "../types/program";
 import { PROGRAM_STATUS_STYLES } from "../types/program";
- 
+
+type UserRole = "Admin" | "Member";
+const USER_ROLE_KEY = "compass_user_role_v1";
+
+function getUserRole(): UserRole {
+  try {
+    const raw = localStorage.getItem(USER_ROLE_KEY);
+    return raw === "Member" ? "Member" : "Admin";
+  } catch {
+    return "Admin";
+  }
+}
+
 interface ProgramCardProps {
   program: SavedProgram;
   onEdit: (program: SavedProgram) => void;
   pinned?: boolean;
 }
- 
+
 export function ProgramCard({ program, onEdit, pinned = false }: ProgramCardProps) {
   const navigate = useNavigate();
-  const { duplicateProgram, archiveProgram, deleteProgram, pinProgram } = usePrograms();
+  const { duplicateProgram, archiveProgram, unarchiveProgram, deleteProgram, pinProgram } = usePrograms();
   const isArchived = program.status === "Archived";
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const role = getUserRole();
  
   function handleDuplicate() {
     const duplicate = duplicateProgram(program.id);
@@ -56,7 +70,12 @@ export function ProgramCard({ program, onEdit, pinned = false }: ProgramCardProp
     archiveProgram(program.id);
     toast.success("Program archived");
   }
- 
+
+  function handleUnarchive() {
+    unarchiveProgram(program.id);
+    toast.success("Program unarchived ✓");
+  }
+
   function handleDelete() {
     deleteProgram(program.id);
     toast.success("Program deleted");
@@ -75,7 +94,10 @@ export function ProgramCard({ program, onEdit, pinned = false }: ProgramCardProp
           isArchived ? "opacity-70" : ""
         } ${pinned ? "ring-2 ring-primary/30 shadow-md" : ""}`}
       >
-        <CardContent className={`${pinned ? "p-6" : "p-5"}`}>
+        <CardContent
+          className={`${pinned ? "p-6" : "p-5"} cursor-pointer`}
+          onClick={() => navigate(`/programs/${program.id}`)}
+        >
           {/* Pin badge */}
           {pinned && (
             <div className="flex items-center gap-1.5 mb-3">
@@ -83,7 +105,7 @@ export function ProgramCard({ program, onEdit, pinned = false }: ProgramCardProp
               <span className="text-xs font-medium text-primary uppercase tracking-wide">Pinned</span>
             </div>
           )}
- 
+
           <div className="flex items-start justify-between gap-4">
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2 flex-wrap mb-2">
@@ -109,48 +131,62 @@ export function ProgramCard({ program, onEdit, pinned = false }: ProgramCardProp
                 </p>
               )}
             </div>
- 
+
             {/* Three-dot menu */}
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0">
-                  <MoreVertical className="h-4 w-4" />
-                  <span className="sr-only">Program actions</span>
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={() => navigate(`/programs/${program.id}/blueprint`)}>
-                  <Eye className="h-4 w-4" /> View
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => onEdit(program)}>
-                  <Pencil className="h-4 w-4" /> Edit
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={handleDuplicate}>
-                  <Copy className="h-4 w-4" /> Duplicate
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={handlePin}>
-                  <Pin className="h-4 w-4" />
-                  {program.pinned ? "Unpin" : "Pin to top"}
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem
-                  onClick={handleArchive}
-                  disabled={isArchived}
-                  className="text-muted-foreground focus:text-foreground"
-                >
-                  <Archive className="h-4 w-4" /> Archive
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onClick={() => setDeleteDialogOpen(true)}
-                  className="text-destructive focus:text-destructive"
-                >
-                  <Trash2 className="h-4 w-4" /> Delete
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+            <div onClick={(e) => e.stopPropagation()}>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0">
+                    <MoreVertical className="h-4 w-4" />
+                    <span className="sr-only">Program actions</span>
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onClick={() => navigate(`/programs/${program.id}/blueprint`)}>
+                    <Eye className="h-4 w-4" /> View
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => onEdit(program)}>
+                    <Pencil className="h-4 w-4" /> Edit
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={handleDuplicate}>
+                    <Copy className="h-4 w-4" /> Duplicate
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={handlePin}>
+                    <Pin className="h-4 w-4" />
+                    {program.pinned ? "Unpin" : "Pin to top"}
+                  </DropdownMenuItem>
+                  {role === "Admin" && (
+                    <>
+                      <DropdownMenuSeparator />
+                      {isArchived ? (
+                        <DropdownMenuItem
+                          onClick={handleUnarchive}
+                          className="text-muted-foreground focus:text-foreground"
+                        >
+                          <ArchiveRestore className="h-4 w-4" /> Unarchive
+                        </DropdownMenuItem>
+                      ) : (
+                        <DropdownMenuItem
+                          onClick={handleArchive}
+                          className="text-muted-foreground focus:text-foreground"
+                        >
+                          <Archive className="h-4 w-4" /> Archive
+                        </DropdownMenuItem>
+                      )}
+                      <DropdownMenuItem
+                        onClick={() => setDeleteDialogOpen(true)}
+                        className="text-destructive focus:text-destructive"
+                      >
+                        <Trash2 className="h-4 w-4" /> Delete
+                      </DropdownMenuItem>
+                    </>
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
           </div>
- 
-          <div className="mt-4">
+
+          <div className="mt-4" onClick={(e) => e.stopPropagation()}>
             <Button asChild size="sm" variant="outline" className="gap-1.5">
               <Link to={`/programs/${program.id}/blueprint`}>
                 <FileText className="h-4 w-4" /> View Blueprint

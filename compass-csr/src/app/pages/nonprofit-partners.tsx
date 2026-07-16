@@ -1,4 +1,6 @@
 import { useState, useMemo } from "react";
+import { Link } from "react-router";
+import { toast } from "sonner";
 import { Card, CardContent } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -9,186 +11,19 @@ import {
   ExternalLink,
   CheckCircle2,
   Plus,
+  Award,
+  ClipboardList,
 } from "lucide-react";
 import { usePrograms } from "../context/programs-context";
-
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-interface Nonprofit {
-  id: string;
-  name: string;
-  mission: string;
-  cause: string;
-  location: string;
-  website: string;
-  size: string; // e.g. "Large", "Mid-size", "Small"
-  partnershipTypes: string[];
-}
-
-// ─── Cause areas ──────────────────────────────────────────────────────────────
-
-const CAUSE_AREAS = [
-  "All",
-  "Education",
-  "Environment",
-  "Food Security",
-  "Workforce Development",
-  "Health & Wellbeing",
-  "Diversity & Inclusion",
-  "Community Development",
-  "Youth & Families",
-];
-
-const CAUSE_COLORS: Record<string, string> = {
-  "Education":             "bg-blue-50 text-blue-700 border-blue-200",
-  "Environment":           "bg-emerald-50 text-emerald-700 border-emerald-200",
-  "Food Security":         "bg-orange-50 text-orange-700 border-orange-200",
-  "Workforce Development": "bg-violet-50 text-violet-700 border-violet-200",
-  "Health & Wellbeing":    "bg-rose-50 text-rose-700 border-rose-200",
-  "Diversity & Inclusion": "bg-indigo-50 text-indigo-700 border-indigo-200",
-  "Community Development": "bg-teal-50 text-teal-700 border-teal-200",
-  "Youth & Families":      "bg-amber-50 text-amber-700 border-amber-200",
-};
-
-// ─── Nonprofit directory (placeholder data) ───────────────────────────────────
-
-const NONPROFITS: Nonprofit[] = [
-  {
-    id: "1",
-    name: "Feeding America",
-    mission: "Advance change in America by ensuring equitable access to nutritious food for all.",
-    cause: "Food Security",
-    location: "Chicago, IL (National)",
-    website: "feedingamerica.org",
-    size: "Large",
-    partnershipTypes: ["Corporate Giving", "Employee Volunteering", "Donation Matching"],
-  },
-  {
-    id: "2",
-    name: "Year Up",
-    mission: "Closing the opportunity divide by providing young adults with skills, experience, and support.",
-    cause: "Workforce Development",
-    location: "Boston, MA (National)",
-    website: "yearup.org",
-    size: "Large",
-    partnershipTypes: ["Skills-Based Volunteering", "Internship Programs", "Corporate Giving"],
-  },
-  {
-    id: "3",
-    name: "The Nature Conservancy",
-    mission: "Conserving the lands and waters on which all life depends.",
-    cause: "Environment",
-    location: "Arlington, VA (Global)",
-    website: "nature.org",
-    size: "Large",
-    partnershipTypes: ["Corporate Giving", "Employee Volunteering", "Cause Marketing"],
-  },
-  {
-    id: "4",
-    name: "Boys & Girls Clubs of America",
-    mission: "Enable all young people, especially those who need us most, to reach their full potential.",
-    cause: "Youth & Families",
-    location: "Atlanta, GA (National)",
-    website: "bgca.org",
-    size: "Large",
-    partnershipTypes: ["Employee Volunteering", "Corporate Giving", "Mentorship"],
-  },
-  {
-    id: "5",
-    name: "Khan Academy",
-    mission: "Providing a free, world-class education for anyone, anywhere.",
-    cause: "Education",
-    location: "Mountain View, CA (Global)",
-    website: "khanacademy.org",
-    size: "Mid-size",
-    partnershipTypes: ["Corporate Giving", "Skills-Based Volunteering"],
-  },
-  {
-    id: "6",
-    name: "American Red Cross",
-    mission: "Preventing and alleviating human suffering in the face of emergencies.",
-    cause: "Health & Wellbeing",
-    location: "Washington, DC (National)",
-    website: "redcross.org",
-    size: "Large",
-    partnershipTypes: ["Employee Volunteering", "Disaster Relief Giving", "Blood Drives"],
-  },
-  {
-    id: "7",
-    name: "Urban Alliance",
-    mission: "Bridging the gap between underserved youth and meaningful employment.",
-    cause: "Workforce Development",
-    location: "Washington, DC",
-    website: "theurbanalliance.org",
-    size: "Mid-size",
-    partnershipTypes: ["Internship Programs", "Mentorship", "Skills-Based Volunteering"],
-  },
-  {
-    id: "8",
-    name: "Meals on Wheels America",
-    mission: "Empowering local community programs to improve the health and quality of life of seniors.",
-    cause: "Food Security",
-    location: "Arlington, VA (National)",
-    website: "mealsonwheelsamerica.org",
-    size: "Large",
-    partnershipTypes: ["Employee Volunteering", "Corporate Giving", "Donation Matching"],
-  },
-  {
-    id: "9",
-    name: "National Urban League",
-    mission: "Empowering African Americans and other underserved communities to achieve economic self-reliance.",
-    cause: "Diversity & Inclusion",
-    location: "New York, NY (National)",
-    website: "nul.org",
-    size: "Large",
-    partnershipTypes: ["Corporate Giving", "Skills-Based Volunteering", "Sponsorship"],
-  },
-  {
-    id: "10",
-    name: "Habitat for Humanity",
-    mission: "Seeking to put God's love into action, bringing people together to build homes and hope.",
-    cause: "Community Development",
-    location: "Americus, GA (Global)",
-    website: "habitat.org",
-    size: "Large",
-    partnershipTypes: ["Employee Volunteering", "Corporate Giving", "Team Build Events"],
-  },
-  {
-    id: "11",
-    name: "Girls Who Code",
-    mission: "Closing the gender gap in technology and supporting women in computing fields.",
-    cause: "Diversity & Inclusion",
-    location: "New York, NY (National)",
-    website: "girlswhocode.com",
-    size: "Mid-size",
-    partnershipTypes: ["Skills-Based Volunteering", "Corporate Giving", "Mentorship"],
-  },
-  {
-    id: "12",
-    name: "Sierra Club Foundation",
-    mission: "Protecting and restoring the wild places and wild things upon which all life depends.",
-    cause: "Environment",
-    location: "Oakland, CA (National)",
-    website: "sierraclubfoundation.org",
-    size: "Mid-size",
-    partnershipTypes: ["Corporate Giving", "Cause Marketing", "Employee Volunteering"],
-  },
-];
-
-// ─── Storage for connected partners ──────────────────────────────────────────
-
-const CONNECTED_KEY = "compass_connected_nonprofits_v1";
-
-function loadConnected(): string[] {
-  try {
-    const raw = localStorage.getItem(CONNECTED_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch { return []; }
-}
-
-function saveConnected(ids: string[]) {
-  try { localStorage.setItem(CONNECTED_KEY, JSON.stringify(ids)); } catch { /* silent */ }
-}
+import {
+  CAUSE_AREAS,
+  CAUSE_COLORS,
+  NONPROFITS,
+  loadConnected,
+  saveConnected,
+  type Nonprofit,
+} from "../lib/nonprofits-data";
+import { loadPartnerships, partnershipKey, resolveCompanyName } from "../lib/partnership-status";
 
 // ─── Nonprofit Card ───────────────────────────────────────────────────────────
 
@@ -197,17 +32,25 @@ function NonprofitCard({
   connected,
   onConnect,
   featured = false,
+  isActivePartner = false,
+  highlighted = false,
 }: {
   nonprofit: Nonprofit;
   connected: boolean;
   onConnect: (id: string) => void;
   featured?: boolean;
+  isActivePartner?: boolean;
+  highlighted?: boolean;
 }) {
   const causeColor = CAUSE_COLORS[nonprofit.cause] ?? "bg-muted text-muted-foreground border-border";
 
   return (
-    <Card className={`border-border shadow-sm hover:shadow-md transition-all duration-200 ${featured ? "ring-2 ring-primary/20" : ""}`}>
-      <CardContent className="p-5 flex flex-col h-full">
+    <Card
+      className={`border-border shadow-sm hover:shadow-md transition-all duration-200 ${
+        highlighted ? "ring-2 ring-amber-300" : featured ? "ring-2 ring-primary/20" : ""
+      }`}
+    >
+      <CardContent className={`flex flex-col h-full ${highlighted ? "p-6" : "p-5"}`}>
         {featured && (
           <div className="flex items-center gap-1.5 mb-2">
             <Heart className="h-3 w-3 text-primary fill-primary" />
@@ -217,7 +60,7 @@ function NonprofitCard({
 
         {/* Name + cause */}
         <div className="flex items-start justify-between gap-2 mb-2">
-          <h3 className="text-base font-semibold text-foreground leading-snug">{nonprofit.name}</h3>
+          <h3 className={`font-semibold text-foreground leading-snug ${highlighted ? "text-lg" : "text-base"}`}>{nonprofit.name}</h3>
           <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium flex-shrink-0 ${causeColor}`}>
             {nonprofit.cause}
           </span>
@@ -249,9 +92,32 @@ function NonprofitCard({
         {/* Actions */}
         <div className="flex items-center gap-2 mt-auto">
           {connected ? (
-            <Button size="sm" variant="outline" className="gap-1.5 text-emerald-700 border-emerald-200 bg-emerald-50 hover:bg-emerald-100 flex-1" disabled>
-              <CheckCircle2 className="h-4 w-4" /> Connected
-            </Button>
+            isActivePartner ? (
+              <>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="gap-1.5 text-amber-700 border-amber-200 bg-amber-50 hover:bg-amber-100 flex-1"
+                  onClick={() => onConnect(nonprofit.id)}
+                >
+                  <Award className="h-4 w-4" /> Active Partner ⭐
+                </Button>
+                <Button size="sm" variant="outline" className="gap-1.5" asChild>
+                  <Link to={`/partnerships/${encodeURIComponent(nonprofit.name)}?scroll=activity`}>
+                    <ClipboardList className="h-4 w-4" /> Log Activity
+                  </Link>
+                </Button>
+              </>
+            ) : (
+              <Button
+                size="sm"
+                variant="outline"
+                className="gap-1.5 text-emerald-700 border-emerald-200 bg-emerald-50 hover:bg-emerald-100 flex-1"
+                onClick={() => onConnect(nonprofit.id)}
+              >
+                <CheckCircle2 className="h-4 w-4" /> Connected
+              </Button>
+            )
           ) : (
             <Button size="sm" className="gap-1.5 flex-1 bg-primary hover:bg-primary/90 text-primary-foreground" onClick={() => onConnect(nonprofit.id)}>
               <Plus className="h-4 w-4" /> Connect
@@ -291,11 +157,32 @@ export function NonprofitPartners() {
     return [...new Set(suggested)].slice(0, 3);
   }, [programs]);
 
-  const suggestedNonprofits = NONPROFITS.filter((n) => suggestedIds.includes(n.id));
+  // Nonprofits that have reached "Active Partner" status for the current company
+  const activePartnerIds = useMemo(() => {
+    const companyName = resolveCompanyName(programs);
+    const all = loadPartnerships();
+    const ids = new Set<string>();
+    for (const n of NONPROFITS) {
+      if (all[partnershipKey(companyName, n.name)]?.status === "Active Partner") {
+        ids.add(n.id);
+      }
+    }
+    return ids;
+  }, [programs]);
+
+  const activePartnerNonprofits = useMemo(
+    () => NONPROFITS.filter((n) => activePartnerIds.has(n.id)),
+    [activePartnerIds],
+  );
+
+  // Active partners get their own highlighted section above, so exclude them
+  // from Suggested and the main directory to avoid showing them twice.
+  const suggestedNonprofits = NONPROFITS.filter((n) => suggestedIds.includes(n.id) && !activePartnerIds.has(n.id));
 
   // Filter by search + cause
   const filtered = useMemo(() => {
     return NONPROFITS.filter((n) => {
+      if (activePartnerIds.has(n.id)) return false;
       const matchesCause = activeCause === "All" || n.cause === activeCause;
       const matchesSearch =
         search.trim() === "" ||
@@ -304,14 +191,23 @@ export function NonprofitPartners() {
         n.cause.toLowerCase().includes(search.toLowerCase());
       return matchesCause && matchesSearch;
     });
-  }, [search, activeCause]);
+  }, [search, activeCause, activePartnerIds]);
 
   function handleConnect(id: string) {
-    const updated = connected.includes(id)
-      ? connected.filter((c) => c !== id)
-      : [...connected, id];
+    const nonprofit = NONPROFITS.find((n) => n.id === id);
+    const isConnecting = !connected.includes(id);
+    const updated = isConnecting
+      ? [...connected, id]
+      : connected.filter((c) => c !== id);
     setConnected(updated);
     saveConnected(updated);
+
+    if (!nonprofit) return;
+    if (isConnecting) {
+      toast.success(`Connected with ${nonprofit.name} ✓`);
+    } else {
+      toast(`Disconnected from ${nonprofit.name}`);
+    }
   }
 
   return (
@@ -343,6 +239,28 @@ export function NonprofitPartners() {
         </div>
       </div>
 
+      {/* Active Partners — highlighted section, always at the top */}
+      {activePartnerNonprofits.length > 0 && (
+        <section>
+          <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-widest mb-4 flex items-center gap-1.5">
+            <Award className="h-3.5 w-3.5 text-amber-600" /> Active Partners
+          </h2>
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+            {activePartnerNonprofits.map((n) => (
+              <NonprofitCard
+                key={n.id}
+                nonprofit={n}
+                connected
+                onConnect={handleConnect}
+                isActivePartner
+                highlighted
+              />
+            ))}
+          </div>
+          <div className="mt-6 border-t border-border" />
+        </section>
+      )}
+
       {/* Suggested section — only shows if there's a saved program */}
       {suggestedNonprofits.length > 0 && (
         <section>
@@ -357,6 +275,7 @@ export function NonprofitPartners() {
                 connected={connected.includes(n.id)}
                 onConnect={handleConnect}
                 featured
+                isActivePartner={activePartnerIds.has(n.id)}
               />
             ))}
           </div>
@@ -417,6 +336,7 @@ export function NonprofitPartners() {
                 nonprofit={n}
                 connected={connected.includes(n.id)}
                 onConnect={handleConnect}
+                isActivePartner={activePartnerIds.has(n.id)}
               />
             ))}
           </div>

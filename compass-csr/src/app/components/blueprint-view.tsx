@@ -1,4 +1,6 @@
-import { useState } from "react";
+import { useState, forwardRef, useImperativeHandle, useRef } from "react";
+import { Link } from "react-router";
+import { toast } from "sonner";
 import {
   Download,
   Share2,
@@ -17,6 +19,8 @@ import { Button } from "./ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
 import type { BlueprintData, BlueprintIcon } from "../types/program";
 import { formatProgramDate } from "../lib/blueprint-data";
+import { exportElementToPdf, buildPdfFilename } from "../lib/pdf-export";
+import { loadCheckedTasks, saveCheckedTasks } from "../lib/blueprint-tasks";
 
 const ICON_MAP = {
   Users,
@@ -34,30 +38,65 @@ interface BlueprintViewProps {
   headerActions?: React.ReactNode;
   footer?: React.ReactNode;
   showFooterActions?: boolean;
+  // When provided (a saved program's id), task checkbox state persists to
+  // localStorage so the Impact Report can read completion counts. Omitted
+  // for the in-wizard preview, where the blueprint hasn't been saved yet.
+  storageKey?: string;
+}
+
+export interface BlueprintViewHandle {
+  downloadPdf: (filename: string) => Promise<void>;
 }
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return <h2 className="text-base font-semibold text-foreground mb-3">{children}</h2>;
 }
 
-export function BlueprintView({
+export const BlueprintView = forwardRef<BlueprintViewHandle, BlueprintViewProps>(function BlueprintView({
   programName,
   companyName,
   blueprint,
   headerActions,
   footer,
   showFooterActions = true,
-}: BlueprintViewProps) {
-  const [checked, setChecked] = useState<Record<string, boolean>>({});
+  storageKey,
+}, ref) {
+  const [checked, setChecked] = useState<Record<string, boolean>>(() =>
+    storageKey ? loadCheckedTasks(storageKey) : {},
+  );
   const displayName = companyName.trim() || "Your Company";
   const generatedDate = formatProgramDate(blueprint.generatedAt);
+  const contentRef = useRef<HTMLDivElement>(null);
+
+  useImperativeHandle(ref, () => ({
+    downloadPdf: async (filename: string) => {
+      if (!contentRef.current) return;
+      await toast.promise(exportElementToPdf(contentRef.current, filename), {
+        loading: "Generating PDF…",
+        success: "PDF downloaded",
+        error: "Failed to generate PDF",
+      });
+    },
+  }));
 
   function toggleTask(key: string) {
-    setChecked((prev) => ({ ...prev, [key]: !prev[key] }));
+    setChecked((prev) => {
+      const next = { ...prev, [key]: !prev[key] };
+      if (storageKey) saveCheckedTasks(storageKey, next);
+      return next;
+    });
+  }
+
+  async function handleDefaultDownload() {
+    if (!contentRef.current) return;
+    await toast.promise(
+      exportElementToPdf(contentRef.current, buildPdfFilename("Compass-Blueprint", programName)),
+      { loading: "Generating PDF…", success: "PDF downloaded", error: "Failed to generate PDF" },
+    );
   }
 
   return (
-    <div className="space-y-10">
+    <div ref={contentRef} className="space-y-10">
       <div className="flex flex-col gap-6 md:flex-row md:items-start md:justify-between">
         <div className="flex-1 min-w-0">
           <div className="inline-flex items-center gap-1.5 text-xs font-semibold tracking-widest uppercase text-primary mb-3">
@@ -72,7 +111,7 @@ export function BlueprintView({
         </div>
         {headerActions ?? (
           <div className="flex items-center gap-2 flex-shrink-0 flex-wrap">
-            <Button variant="outline" size="sm" className="gap-1.5 text-sm">
+            <Button variant="outline" size="sm" className="gap-1.5 text-sm" onClick={() => void handleDefaultDownload()}>
               <Download className="h-4 w-4" /> Download PDF
             </Button>
             <Button variant="outline" size="sm" className="gap-1.5 text-sm">
@@ -187,8 +226,10 @@ export function BlueprintView({
               </CardHeader>
               <CardContent className="flex-1 flex flex-col justify-between gap-4">
                 <p className="text-xs text-muted-foreground leading-relaxed">{desc}</p>
-                <Button variant="outline" size="sm" className="gap-1.5 w-full text-xs">
-                  Explore Partnership <ChevronRight className="h-3.5 w-3.5" />
+                <Button asChild variant="outline" size="sm" className="gap-1.5 w-full text-xs">
+                  <Link to={`/partnerships/${encodeURIComponent(name)}`} state={{ cause, desc }}>
+                    Explore Partnership <ChevronRight className="h-3.5 w-3.5" />
+                  </Link>
                 </Button>
               </CardContent>
             </Card>
@@ -286,7 +327,7 @@ export function BlueprintView({
               to return and manage it later.
             </p>
             <div className="flex items-center gap-3">
-              <Button variant="outline" size="sm" className="gap-1.5">
+              <Button variant="outline" size="sm" className="gap-1.5" onClick={() => void handleDefaultDownload()}>
                 <Download className="h-4 w-4" /> Download PDF
               </Button>
             </div>
@@ -294,4 +335,4 @@ export function BlueprintView({
         ))}
     </div>
   );
-}
+});

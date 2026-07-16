@@ -1,5 +1,6 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
+import { toast } from "sonner";
 import { Card, CardContent } from "../components/ui/card";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
@@ -12,99 +13,27 @@ import {
   DialogTitle,
   DialogFooter,
 } from "../components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../components/ui/select";
 import { Badge } from "../components/ui/badge";
-import { Users, Plus, X, Camera, Pencil, Trash2 } from "lucide-react";
- 
-// ─── Types ────────────────────────────────────────────────────────────────────
- 
-interface TeamMember {
-  id: string;
-  name: string;
-  role: string;
-  email: string;
-  note: string;
-  skills: string[];
-  avatarUrl: string | null; // base64 or null
-}
- 
-// ─── Storage ──────────────────────────────────────────────────────────────────
- 
-const STORAGE_KEY = "compass_team_v1";
- 
-function loadMembers(): TeamMember[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
- 
-function saveMembers(members: TeamMember[]) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(members));
-  } catch {
-    // quota exceeded — fail silently
-  }
-}
- 
-function createId(): string {
-  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
-    return crypto.randomUUID();
-  }
-  return `member-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-}
- 
-// ─── Avatar helpers ───────────────────────────────────────────────────────────
- 
-const AVATAR_COLORS = [
-  "bg-violet-500",
-  "bg-teal-500",
-  "bg-amber-500",
-  "bg-rose-500",
-  "bg-sky-500",
-  "bg-emerald-500",
-  "bg-orange-500",
-  "bg-indigo-500",
-];
- 
-function colorForName(name: string): string {
-  let hash = 0;
-  for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
-  return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
-}
- 
-function initials(name: string): string {
-  return name
-    .split(" ")
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((w) => w[0].toUpperCase())
-    .join("");
-}
- 
-// ─── Avatar component ─────────────────────────────────────────────────────────
- 
-function Avatar({ member, size = "md" }: { member: TeamMember; size?: "sm" | "md" | "lg" }) {
-  const sizeClass = size === "lg" ? "h-20 w-20 text-2xl" : size === "sm" ? "h-8 w-8 text-xs" : "h-12 w-12 text-sm";
-  if (member.avatarUrl) {
-    return (
-      <img
-        src={member.avatarUrl}
-        alt={member.name}
-        className={`${sizeClass} rounded-full object-cover flex-shrink-0`}
-      />
-    );
-  }
-  return (
-    <div className={`${sizeClass} ${colorForName(member.name)} rounded-full flex items-center justify-center text-white font-semibold flex-shrink-0`}>
-      {initials(member.name) || "?"}
-    </div>
-  );
-}
- 
+import { Users, Plus, X, Camera, Pencil, Trash2, Mail, Check } from "lucide-react";
+import {
+  type TeamMember,
+  loadTeamMembers as loadMembers,
+  saveTeamMembers as saveMembers,
+  createTeamMemberId as createId,
+  colorForName,
+  initials,
+} from "../lib/team";
+import { MemberAvatar as Avatar } from "../components/member-avatar";
+import { useAuth } from "../context/auth-context";
+import supabase from "../../lib/supabase";
+
 // ─── Empty state ──────────────────────────────────────────────────────────────
  
 function EmptyState({ onAdd }: { onAdd: () => void }) {
@@ -409,16 +338,166 @@ function MemberModal({
   );
 }
  
+// ─── Invite Team Member modal ───────────────────────────────────────────────
+
+function InviteModal({
+  open,
+  companyId,
+  onClose,
+}: {
+  open: boolean;
+  companyId: string | null;
+  onClose: () => void;
+}) {
+  const [email, setEmail] = useState("");
+  const [role, setRole] = useState("member");
+  const [sending, setSending] = useState(false);
+  const [createdInvite, setCreatedInvite] = useState<{ email: string; url: string } | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (open) {
+      setEmail("");
+      setRole("member");
+      setCreatedInvite(null);
+      setCopied(false);
+    }
+  }, [open]);
+
+  async function handleSendInvite() {
+    if (!email.trim() || !companyId) return;
+    setSending(true);
+    try {
+      const token = crypto.randomUUID();
+      const { error } = await supabase.from("invites").insert({
+        company_id: companyId,
+        email: email.trim(),
+        role,
+        token,
+        accepted: false,
+      });
+      if (error) throw error;
+
+      const inviteUrl = `${window.location.origin}/signup?token=${token}`;
+      setCreatedInvite({ email: email.trim(), url: inviteUrl });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Couldn't create invite");
+    } finally {
+      setSending(false);
+    }
+  }
+
+  async function handleCopyLink() {
+    if (!createdInvite) return;
+    try {
+      await navigator.clipboard.writeText(createdInvite.url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      toast.error("Couldn't copy link");
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-md">
+        {createdInvite ? (
+          <>
+            <DialogHeader>
+              <div className="flex flex-col items-center text-center gap-2">
+                <div className="h-12 w-12 rounded-full bg-emerald-100 flex items-center justify-center">
+                  <Check className="h-6 w-6 text-emerald-600" />
+                </div>
+                <DialogTitle>Invite created for {createdInvite.email}!</DialogTitle>
+              </div>
+            </DialogHeader>
+
+            <div className="space-y-3 py-2">
+              <div className="flex items-center gap-2">
+                <Input
+                  readOnly
+                  value={createdInvite.url}
+                  onFocus={(e) => e.target.select()}
+                  className="text-xs"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => void handleCopyLink()}
+                  className="flex-shrink-0"
+                >
+                  {copied ? "Copied! ✓" : "Copy Link"}
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Share this link with {createdInvite.email} via email, Slack, or any other channel.
+                The link expires when used.
+              </p>
+            </div>
+
+            <DialogFooter>
+              <Button onClick={onClose} className="w-full">Done</Button>
+            </DialogFooter>
+          </>
+        ) : (
+          <>
+            <DialogHeader>
+              <DialogTitle>Invite Team Member</DialogTitle>
+            </DialogHeader>
+
+            <div className="space-y-4 py-2">
+              <div className="space-y-1.5">
+                <Label htmlFor="invite-email">Email address *</Label>
+                <Input
+                  id="invite-email"
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="jane@company.com"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Role</Label>
+                <Select value={role} onValueChange={setRole}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="admin">Admin</SelectItem>
+                    <SelectItem value="member">Member</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <DialogFooter>
+              <Button variant="outline" onClick={onClose}>Cancel</Button>
+              <Button onClick={() => void handleSendInvite()} disabled={!email.trim() || sending}>
+                {sending ? "Sending…" : "Send Invite"}
+              </Button>
+            </DialogFooter>
+          </>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 // ─── Main page ────────────────────────────────────────────────────────────────
- 
+
 export function Team() {
+  const { userProfile, company } = useAuth();
+  // Show by default (including while userProfile hasn't loaded yet) — only
+  // hide once we know for certain the role is "member".
+  const isAdmin = userProfile?.role !== "member";
   const [members, setMembers] = useState<TeamMember[]>(loadMembers);
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<TeamMember | null>(null);
- 
+  const [inviteOpen, setInviteOpen] = useState(false);
+
   // Persist on every change
   useEffect(() => { saveMembers(members); }, [members]);
- 
+
   const openAdd = () => { setEditing(null); setModalOpen(true); };
   const openEdit = (m: TeamMember) => { setEditing(m); setModalOpen(true); };
   const closeModal = () => { setModalOpen(false); setEditing(null); };
@@ -451,10 +530,18 @@ export function Team() {
           </p>
         </div>
         {members.length > 0 && (
-          <Button onClick={openAdd}>
-            <Plus className="h-4 w-4 mr-2" />
-            Add Team Member
-          </Button>
+          <div className="flex items-center gap-2">
+            {isAdmin && (
+              <Button variant="outline" onClick={() => setInviteOpen(true)}>
+                <Mail className="h-4 w-4 mr-2" />
+                Invite Team Member
+              </Button>
+            )}
+            <Button onClick={openAdd}>
+              <Plus className="h-4 w-4 mr-2" />
+              Add Team Member
+            </Button>
+          </div>
         )}
       </div>
  
@@ -475,6 +562,11 @@ export function Team() {
         initial={editing}
         onSave={handleSave}
         onClose={closeModal}
+      />
+      <InviteModal
+        open={inviteOpen}
+        companyId={company?.id ?? null}
+        onClose={() => setInviteOpen(false)}
       />
     </div>
   );

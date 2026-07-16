@@ -11,10 +11,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "../components/ui/select";
-import { Building2, Bell, User, ChevronDown, Eye, EyeOff, Camera } from "lucide-react";
- 
+import { Building2, Bell, User, ChevronDown, Eye, EyeOff, Camera, Shield } from "lucide-react";
+import { notifySettingsUpdated } from "../lib/settings";
+
 // ─── Types ────────────────────────────────────────────────────────────────────
- 
+
+type UserRole = "Admin" | "Member";
+
 interface CompanyProfile {
   companyName: string;
   industry: string;
@@ -87,6 +90,40 @@ function persistSettings(s: SettingsStore) {
     // fail silently
   }
 }
+
+// ─── Role ─────────────────────────────────────────────────────────────────────
+
+const USER_ROLE_KEY = "compass_user_role_v1";
+
+function loadUserRole(): UserRole {
+  try {
+    const raw = localStorage.getItem(USER_ROLE_KEY);
+    return raw === "Member" ? "Member" : "Admin";
+  } catch {
+    return "Admin";
+  }
+}
+
+function persistUserRole(role: UserRole) {
+  try {
+    localStorage.setItem(USER_ROLE_KEY, role);
+  } catch {
+    // fail silently
+  }
+}
+
+const ROLE_OPTIONS: { value: UserRole; title: string; desc: string }[] = [
+  {
+    value: "Admin",
+    title: "Admin (program lead)",
+    desc: "Full access: create programs, manage settings, approve task suggestions",
+  },
+  {
+    value: "Member",
+    title: "Member (team member)",
+    desc: "View programs, update your tasks, log activity, submit feedback",
+  },
+];
  
 // ─── Toggle switch ────────────────────────────────────────────────────────────
  
@@ -175,7 +212,10 @@ const COMPANY_SIZES = [
  
 export function Settings() {
   const stored = loadSettings();
- 
+
+  // Role state
+  const [role, setRole] = useState<UserRole>(() => loadUserRole());
+
   // Company profile state
   const [company, setCompany] = useState<CompanyProfile>(stored.company);
  
@@ -199,10 +239,19 @@ export function Settings() {
   const logoRef = useRef<HTMLInputElement>(null);
  
   const showToast = (msg: string) => setToast(msg);
- 
+
+  const handleSelectRole = (next: UserRole) => {
+    if (next === role) return;
+    setRole(next);
+    persistUserRole(next);
+    notifySettingsUpdated();
+    showToast("Role saved ✓");
+  };
+
   const saveCompany = () => {
     const current = loadSettings();
     persistSettings({ ...current, company });
+    notifySettingsUpdated();
     showToast("Company profile saved ✓");
   };
  
@@ -241,8 +290,47 @@ export function Settings() {
         <p className="text-muted-foreground">Manage your company profile and preferences</p>
       </div>
  
+      {/* ── Section 0: Your Role ── */}
+      <Section icon={Shield} title="Your Role">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          {ROLE_OPTIONS.map((opt) => {
+            const selected = role === opt.value;
+            return (
+              <button
+                key={opt.value}
+                type="button"
+                onClick={() => handleSelectRole(opt.value)}
+                className={`text-left rounded-lg border p-4 transition-colors ${
+                  selected ? "border-primary bg-primary/5 ring-1 ring-primary" : "border-border hover:border-primary/40"
+                }`}
+              >
+                <div className="flex items-center gap-2 mb-1.5">
+                  <span
+                    className={`h-4 w-4 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${
+                      selected ? "border-primary" : "border-muted-foreground/40"
+                    }`}
+                  >
+                    {selected && <span className="h-2 w-2 rounded-full bg-primary" />}
+                  </span>
+                  <span className="text-sm font-semibold text-foreground">{opt.title}</span>
+                </div>
+                <p className="text-xs text-muted-foreground leading-relaxed pl-6">{opt.desc}</p>
+              </button>
+            );
+          })}
+        </div>
+      </Section>
+
       {/* ── Section 1: Company Profile ── */}
-      <Section icon={Building2} title="Company Profile" onSave={saveCompany}>
+      <Section icon={Building2} title="Company Profile" onSave={role === "Admin" ? saveCompany : undefined}>
+        {role === "Member" && (
+          <div className="rounded-md border border-border bg-muted/40 px-3 py-2.5">
+            <p className="text-xs text-muted-foreground">
+              Only Admins can edit company information. Contact your Admin to make changes.
+            </p>
+          </div>
+        )}
+
         {/* Logo */}
         <div className="flex items-center gap-4">
           <div className="relative">
@@ -259,7 +347,8 @@ export function Settings() {
             )}
             <button
               onClick={() => logoRef.current?.click()}
-              className="absolute -bottom-1 -right-1 h-6 w-6 rounded-full bg-primary flex items-center justify-center text-primary-foreground shadow"
+              disabled={role === "Member"}
+              className="absolute -bottom-1 -right-1 h-6 w-6 rounded-full bg-primary flex items-center justify-center text-primary-foreground shadow disabled:opacity-50 disabled:cursor-not-allowed"
               aria-label="Upload logo"
             >
               <Camera className="h-3 w-3" />
@@ -274,10 +363,11 @@ export function Settings() {
             type="file"
             accept="image/*"
             className="hidden"
+            disabled={role === "Member"}
             onChange={handleLogoUpload}
           />
         </div>
- 
+
         {/* Company name */}
         <div className="space-y-1.5">
           <Label htmlFor="s-company-name">Company Name</Label>
@@ -286,15 +376,17 @@ export function Settings() {
             value={company.companyName}
             onChange={(e) => setCompany((c) => ({ ...c, companyName: e.target.value }))}
             placeholder="Acme Corp"
+            disabled={role === "Member"}
           />
         </div>
- 
+
         {/* Industry */}
         <div className="space-y-1.5">
           <Label>Industry</Label>
           <Select
             value={company.industry}
             onValueChange={(v) => setCompany((c) => ({ ...c, industry: v }))}
+            disabled={role === "Member"}
           >
             <SelectTrigger>
               <SelectValue placeholder="Select industry" />
@@ -306,13 +398,14 @@ export function Settings() {
             </SelectContent>
           </Select>
         </div>
- 
+
         {/* Company size */}
         <div className="space-y-1.5">
           <Label>Company Size</Label>
           <Select
             value={company.companySize}
             onValueChange={(v) => setCompany((c) => ({ ...c, companySize: v }))}
+            disabled={role === "Member"}
           >
             <SelectTrigger>
               <SelectValue placeholder="Select size" />
@@ -324,7 +417,7 @@ export function Settings() {
             </SelectContent>
           </Select>
         </div>
- 
+
         {/* Mission statement */}
         <div className="space-y-1.5">
           <Label htmlFor="s-mission">Brand Mission Statement</Label>
@@ -334,6 +427,7 @@ export function Settings() {
             onChange={(e) => setCompany((c) => ({ ...c, missionStatement: e.target.value }))}
             placeholder="What is your company's mission or purpose?"
             rows={3}
+            disabled={role === "Member"}
           />
         </div>
       </Section>

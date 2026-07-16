@@ -7,10 +7,23 @@ import { usePrograms } from "../context/programs-context";
 import { useWizard } from "../context/wizard-context";
 import type { SavedProgram } from "../types/program";
 
+type UserRole = "Admin" | "Member";
+const USER_ROLE_KEY = "compass_user_role_v1";
+
+function getUserRole(): UserRole {
+  try {
+    const raw = localStorage.getItem(USER_ROLE_KEY);
+    return raw === "Member" ? "Member" : "Admin";
+  } catch {
+    return "Admin";
+  }
+}
+
 export function MyPrograms() {
   const navigate = useNavigate();
   const { programs } = usePrograms();
   const { restoreIntake, resetWizard } = useWizard();
+  const role = getUserRole();
 
   // Split programs into groups
   const pinnedPrograms = programs.filter((p) => p.pinned && p.status !== "Archived");
@@ -38,9 +51,11 @@ export function MyPrograms() {
             View and manage all your CSR programs in one place
           </p>
         </div>
-        <Button onClick={handleNewProgram} className="gap-1.5 bg-primary hover:bg-primary/90 text-primary-foreground">
-          <PlusCircle className="h-4 w-4" /> New Program
-        </Button>
+        {role === "Admin" && (
+          <Button onClick={handleNewProgram} className="gap-1.5 bg-primary hover:bg-primary/90 text-primary-foreground">
+            <PlusCircle className="h-4 w-4" /> New Program
+          </Button>
+        )}
       </div>
 
       {/* Empty state */}

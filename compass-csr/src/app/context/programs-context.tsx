@@ -23,6 +23,7 @@ interface ProgramsContextValue {
   getProgram: (id: string) => SavedProgram | undefined;
   duplicateProgram: (id: string) => SavedProgram | undefined;
   archiveProgram: (id: string) => void;
+  unarchiveProgram: (id: string) => void;
   deleteProgram: (id: string) => void;
   pinProgram: (id: string) => void;
   updateProgram: (id: string, patch: Partial<Pick<SavedProgram, "name" | "status">>) => void;
@@ -106,7 +107,13 @@ export function ProgramsProvider({ children }: { children: ReactNode }) {
       prev.map((p) => p.id === id ? { ...p, status: "Archived", pinned: false } : p),
     );
   }, []);
- 
+
+  const unarchiveProgram = useCallback((id: string) => {
+    setPrograms((prev) =>
+      prev.map((p) => p.id === id ? { ...p, status: "Planning" } : p),
+    );
+  }, []);
+
   // Permanently removes a program
   const deleteProgram = useCallback((id: string) => {
     setPrograms((prev) => prev.filter((p) => p.id !== id));
@@ -135,11 +142,12 @@ export function ProgramsProvider({ children }: { children: ReactNode }) {
       getProgram,
       duplicateProgram,
       archiveProgram,
+      unarchiveProgram,
       deleteProgram,
       pinProgram,
       updateProgram,
     }),
-    [programs, saveProgram, getProgram, duplicateProgram, archiveProgram, deleteProgram, pinProgram, updateProgram],
+    [programs, saveProgram, getProgram, duplicateProgram, archiveProgram, unarchiveProgram, deleteProgram, pinProgram, updateProgram],
   );
  
   return (
