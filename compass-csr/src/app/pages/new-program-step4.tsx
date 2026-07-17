@@ -177,7 +177,7 @@ function BlueprintPage({
   suggestedName: string;
 }) {
   const navigate = useNavigate();
-  const { step1, step2, step3 } = useWizard();
+  const { step1, step2, step3, resetWizard } = useWizard();
   const { saveProgram } = usePrograms();
   const [saveDialogOpen, setSaveDialogOpen] = useState(false);
   const blueprintRef = useRef<BlueprintViewHandle>(null);
@@ -189,6 +189,7 @@ function BlueprintPage({
       blueprint,
     });
     toast.success("Program saved to My Programs ✓");
+    resetWizard();
     navigate("/my-programs");
   }
 
