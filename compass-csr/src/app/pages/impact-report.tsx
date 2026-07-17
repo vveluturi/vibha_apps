@@ -14,6 +14,7 @@ import {
   ExternalLink,
   Plus,
   X,
+  Lightbulb,
 } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
@@ -36,6 +37,7 @@ import { loadPartnerships, type PartnershipRecord } from "../lib/partnership-sta
 import { loadActivityLog, activityTotals, resizeImageToDataUrl, type ActivityLogEntry } from "../lib/partnership-activity";
 import { loadGalleryPhotos, addGalleryPhotos, type GalleryPhoto } from "../lib/company-gallery";
 import { exportElementToPdf, buildPdfFilename } from "../lib/pdf-export";
+import { shouldShowFeatureBanner, dismissRecommendation, DISMISS_KEYS } from "../lib/feature-recommendations";
 import { PROGRAM_STATUS_STYLES } from "../types/program";
 
 // ─── Derived types ──────────────────────────────────────────────────────────
@@ -188,6 +190,12 @@ export function ImpactReport() {
   const [galleryPhotos, setGalleryPhotos] = useState<GalleryPhoto[]>(() => loadGalleryPhotos());
   const [activityEntries] = useState<ActivityLogEntry[]>(() => loadActivityLog());
   const [lightboxItem, setLightboxItem] = useState<GalleryItem | null>(null);
+  const [showBanner, setShowBanner] = useState(() => shouldShowFeatureBanner("impact-report"));
+
+  function handleDismissBanner() {
+    dismissRecommendation(DISMISS_KEYS["impact-report"]);
+    setShowBanner(false);
+  }
 
   const activePrograms = useMemo(() => programs.filter((p) => p.status !== "Archived"), [programs]);
   const partnerships = useMemo(() => resolvePartnerships(), []);
@@ -243,6 +251,24 @@ export function ImpactReport() {
 
   return (
     <div className="p-8 max-w-6xl mx-auto space-y-10" ref={reportRef}>
+      {/* Contextual banner */}
+      {showBanner && (
+        <div className="bg-primary/5 border border-primary/20 rounded-lg px-4 py-3 flex items-start gap-3">
+          <Lightbulb className="h-4 w-4 text-primary flex-shrink-0 mt-0.5" />
+          <p className="text-sm text-foreground flex-1">
+            Your leadership team expects updates — download your Impact Report as PDF and share it with them today.
+          </p>
+          <button
+            type="button"
+            onClick={handleDismissBanner}
+            aria-label="Dismiss"
+            className="text-muted-foreground hover:text-foreground flex-shrink-0"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex flex-col gap-6 md:flex-row md:items-start md:justify-between">
         <div>

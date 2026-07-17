@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { Link } from "react-router";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
-import { Sparkles, TrendingUp, Heart, Users, FileText, Pin, PlusCircle, AlertTriangle, CalendarClock, MessageSquare } from "lucide-react";
+import { Sparkles, TrendingUp, Heart, Users, FileText, Pin, PlusCircle, AlertTriangle, CalendarClock, MessageSquare, Calendar, CheckSquare, BarChart, MessageCircle } from "lucide-react";
 import { usePrograms } from "../context/programs-context";
 import { useWizard } from "../context/wizard-context";
 import { useNavigate } from "react-router";
@@ -22,7 +22,17 @@ import {
 } from "../lib/tasks";
 import { useUnreadFeedbackCount } from "../lib/feedback";
 import { OnboardingModal } from "../components/onboarding-modal";
+import { getActiveRecommendations, dismissRecommendation, type RecommendationFeature } from "../lib/feature-recommendations";
 import type { SavedProgram } from "../types/program";
+
+const RECOMMENDATION_ICONS: Record<string, React.ElementType> = {
+  Calendar,
+  CheckSquare,
+  MessageSquare,
+  BarChart,
+  Heart,
+  MessageCircle,
+};
 
 type UserRole = "Admin" | "Member";
 const USER_ROLE_KEY = "compass_user_role_v1";
@@ -47,10 +57,21 @@ interface NextStepPrompt {
   title: string;
   subtitle?: string;
   extraLine?: string;
-  buttonText: string;
-  buttonTo: string;
+  buttonText?: string;
+  buttonTo?: string;
   slackLine?: boolean;
+  dismissKey?: string;
+  externalLinks?: { label: string; url: string }[];
 }
+
+const RECOMMENDATION_BUTTON_LABELS: Record<RecommendationFeature, string> = {
+  "my-tasks": "Assign a Task →",
+  "weekly-digest": "Set Up Weekly Digest →",
+  "team-inbox": "View Inbox →",
+  "impact-report": "View Impact Report →",
+  "nonprofit-partners": "Browse Nonprofits →",
+  "slack-teams": "",
+};
 
 // Walks the onboarding checklist in priority order and returns the first
 // unmet step — re-evaluated fresh on every render (no memoization) so each
@@ -133,6 +154,20 @@ function getNextStepPrompt(programs: SavedProgram[], role: UserRole, unreadFeedb
     };
   }
 
+  const recommendations = getActiveRecommendations();
+  if (recommendations.length > 0) {
+    const rec = recommendations[0];
+    return {
+      icon: RECOMMENDATION_ICONS[rec.icon] ?? Sparkles,
+      title: rec.title,
+      subtitle: rec.desc,
+      buttonText: rec.link ? RECOMMENDATION_BUTTON_LABELS[rec.feature] : undefined,
+      buttonTo: rec.link,
+      externalLinks: rec.externalLinks,
+      dismissKey: rec.dismissKey,
+    };
+  }
+
   return null;
 }
 
@@ -167,11 +202,20 @@ export function Dashboard() {
   );
 
   const unreadFeedback = useUnreadFeedbackCount();
+  // Forces a re-render so getNextStepPrompt (unmemoized, re-evaluated fresh
+  // every render) picks up the dismissal from localStorage immediately.
+  const [, setDismissTick] = useState(0);
   const nextStep = getNextStepPrompt(programs, role, unreadFeedback);
 
   function handleNewProgram() {
     resetWizard();
     navigate("/new-program");
+  }
+
+  function handleDismissNextStep() {
+    if (!nextStep?.dismissKey) return;
+    dismissRecommendation(nextStep.dismissKey);
+    setDismissTick((t) => t + 1);
   }
 
   const stats = [
@@ -261,8 +305,18 @@ export function Dashboard() {
 
       {/* Contextual Next Step prompt */}
       {nextStep && (
-        <div className="rounded-lg border-l-4 border-primary bg-primary/5 p-4">
-          <div className="flex items-center justify-between gap-4 flex-wrap">
+        <div className="relative rounded-lg border-l-4 border-primary bg-primary/5 p-4">
+          {nextStep.dismissKey && (
+            <button
+              type="button"
+              onClick={handleDismissNextStep}
+              aria-label="Dismiss"
+              className="absolute top-2.5 right-2.5 text-xs text-muted-foreground hover:text-foreground"
+            >
+              ✕ Dismiss
+            </button>
+          )}
+          <div className="flex items-center justify-between gap-4 flex-wrap pr-16">
             <div className="min-w-0">
               <p className="text-sm font-semibold text-foreground flex items-center gap-1.5">
                 {nextStep.icon ? (
@@ -279,13 +333,27 @@ export function Dashboard() {
                 <p className="text-xs text-muted-foreground mt-0.5">{nextStep.extraLine}</p>
               )}
             </div>
-            <Button
-              asChild
-              size="sm"
-              className="gap-1.5 bg-primary hover:bg-primary/90 text-primary-foreground flex-shrink-0"
-            >
-              <Link to={nextStep.buttonTo}>{nextStep.buttonText}</Link>
-            </Button>
+            {nextStep.externalLinks ? (
+              <div className="flex items-center gap-2 flex-shrink-0">
+                {nextStep.externalLinks.map((link) => (
+                  <Button key={link.url} asChild size="sm" variant="outline" className="gap-1.5">
+                    <a href={link.url} target="_blank" rel="noopener noreferrer">
+                      {link.label}
+                    </a>
+                  </Button>
+                ))}
+              </div>
+            ) : (
+              nextStep.buttonTo && (
+                <Button
+                  asChild
+                  size="sm"
+                  className="gap-1.5 bg-primary hover:bg-primary/90 text-primary-foreground flex-shrink-0"
+                >
+                  <Link to={nextStep.buttonTo}>{nextStep.buttonText}</Link>
+                </Button>
+              )
+            )}
           </div>
           {nextStep.slackLine && (
             <p className="text-xs text-muted-foreground mt-2">

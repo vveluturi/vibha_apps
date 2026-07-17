@@ -13,6 +13,8 @@ import {
   Plus,
   Award,
   ClipboardList,
+  Lightbulb,
+  X,
 } from "lucide-react";
 import { usePrograms } from "../context/programs-context";
 import {
@@ -24,6 +26,7 @@ import {
   type Nonprofit,
 } from "../lib/nonprofits-data";
 import { loadPartnerships, partnershipKey, resolveCompanyName } from "../lib/partnership-status";
+import { shouldShowFeatureBanner, dismissRecommendation, DISMISS_KEYS } from "../lib/feature-recommendations";
 
 // ─── Nonprofit Card ───────────────────────────────────────────────────────────
 
@@ -141,6 +144,12 @@ export function NonprofitPartners() {
   const [search, setSearch] = useState("");
   const [activeCause, setActiveCause] = useState("All");
   const [connected, setConnected] = useState<string[]>(loadConnected);
+  const [showBanner, setShowBanner] = useState(() => shouldShowFeatureBanner("nonprofit-partners"));
+
+  function handleDismissBanner() {
+    dismissRecommendation(DISMISS_KEYS["nonprofit-partners"]);
+    setShowBanner(false);
+  }
 
   // Derive suggested nonprofits from the most recent program's focus areas
   const suggestedIds = useMemo(() => {
@@ -212,6 +221,24 @@ export function NonprofitPartners() {
 
   return (
     <div className="p-8 max-w-7xl mx-auto space-y-8">
+
+      {/* Contextual banner */}
+      {showBanner && (
+        <div className="bg-primary/5 border border-primary/20 rounded-lg px-4 py-3 flex items-start gap-3">
+          <Lightbulb className="h-4 w-4 text-primary flex-shrink-0 mt-0.5" />
+          <p className="text-sm text-foreground flex-1">
+            Your team wants to involve nonprofit partners — connect with organizations below and share your program plan.
+          </p>
+          <button
+            type="button"
+            onClick={handleDismissBanner}
+            aria-label="Dismiss"
+            className="text-muted-foreground hover:text-foreground flex-shrink-0"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
 
       {/* Header */}
       <div>

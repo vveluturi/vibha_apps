@@ -9,6 +9,7 @@ import {
   CheckCircle2,
   Trash2,
   ArrowUpRight,
+  X,
 } from "lucide-react";
 import { Card, CardContent } from "../components/ui/card";
 import { Button } from "../components/ui/button";
@@ -26,6 +27,7 @@ import {
   type FeedbackItem,
   type FeedbackType,
 } from "../lib/feedback";
+import { shouldShowFeatureBanner, dismissRecommendation, DISMISS_KEYS } from "../lib/feature-recommendations";
 
 // ─── Role (matches the local pattern used by dashboard.tsx / program-dashboard.tsx) ─
 
@@ -217,6 +219,12 @@ export function TeamInbox() {
     loadFeedback().sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
   );
   const [filter, setFilter] = useState<FilterKey>("all");
+  const [showBanner, setShowBanner] = useState(() => shouldShowFeatureBanner("team-inbox"));
+
+  function handleDismissBanner() {
+    dismissRecommendation(DISMISS_KEYS["team-inbox"]);
+    setShowBanner(false);
+  }
 
   function refresh() {
     setItems(loadFeedback().sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
@@ -250,6 +258,24 @@ export function TeamInbox() {
 
   return (
     <div className="p-8 max-w-4xl mx-auto space-y-6">
+      {/* Contextual banner */}
+      {showBanner && (
+        <div className="bg-primary/5 border border-primary/20 rounded-lg px-4 py-3 flex items-start gap-3">
+          <Lightbulb className="h-4 w-4 text-primary flex-shrink-0 mt-0.5" />
+          <p className="text-sm text-foreground flex-1">
+            Your team wants to communicate — share the Inbox link with your team members so they can submit questions.
+          </p>
+          <button
+            type="button"
+            onClick={handleDismissBanner}
+            aria-label="Dismiss"
+            className="text-muted-foreground hover:text-foreground flex-shrink-0"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+
       {/* Header */}
       <div>
         <h1 className="text-3xl font-semibold text-foreground mb-1">Team Inbox</h1>

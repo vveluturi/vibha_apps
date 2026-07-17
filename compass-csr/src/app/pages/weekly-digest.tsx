@@ -1,10 +1,11 @@
-import { useMemo, useRef } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Link } from "react-router";
 import { toast } from "sonner";
-import { Mail, Download, CheckCircle2, AlertTriangle, Handshake, TrendingUp, Trophy, CalendarClock } from "lucide-react";
+import { Mail, Download, CheckCircle2, AlertTriangle, Handshake, TrendingUp, Trophy, CalendarClock, Lightbulb, X } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
 import { usePrograms } from "../context/programs-context";
+import { shouldShowFeatureBanner, dismissRecommendation, DISMISS_KEYS } from "../lib/feature-recommendations";
 import { loadTeamMembers } from "../lib/team";
 import { NameAvatar } from "../components/member-avatar";
 import { useCompanyName } from "../lib/settings";
@@ -100,6 +101,12 @@ export function WeeklyDigest() {
   const { programs } = usePrograms();
   const companyName = useCompanyName();
   const digestRef = useRef<HTMLDivElement>(null);
+  const [showBanner, setShowBanner] = useState(() => shouldShowFeatureBanner("weekly-digest"));
+
+  function handleDismissBanner() {
+    dismissRecommendation(DISMISS_KEYS["weekly-digest"]);
+    setShowBanner(false);
+  }
 
   const today = todayISO();
   const weekStartISO = useMemo(() => toISO(startOfWeek(today)), [today]);
@@ -239,6 +246,24 @@ export function WeeklyDigest() {
   return (
     <div className="min-h-full bg-background">
       <div className="max-w-5xl mx-auto px-6 py-8 space-y-8" ref={digestRef}>
+
+        {/* Contextual banner */}
+        {showBanner && (
+          <div className="bg-primary/5 border border-primary/20 rounded-lg px-4 py-3 flex items-start gap-3">
+            <Lightbulb className="h-4 w-4 text-primary flex-shrink-0 mt-0.5" />
+            <p className="text-sm text-foreground flex-1">
+              Your team prefers regular check-ins — set up your Weekly Digest schedule and send your first one today.
+            </p>
+            <button
+              type="button"
+              onClick={handleDismissBanner}
+              aria-label="Dismiss"
+              className="text-muted-foreground hover:text-foreground flex-shrink-0"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        )}
 
         {/* Header */}
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
