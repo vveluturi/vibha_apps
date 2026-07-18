@@ -22,6 +22,9 @@ export interface UserProfile {
 export interface Company {
   id: string;
   name: string;
+  industry?: string | null;
+  company_size?: string | null;
+  mission?: string | null;
 }
 
 interface SignUpParams {
@@ -40,6 +43,7 @@ interface AuthContextValue {
   signUp: (params: SignUpParams) => Promise<{ needsEmailConfirmation: boolean }>;
   signIn: (email: string, password: string) => Promise<void>;
   signOut: () => Promise<void>;
+  refreshCompany: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -202,9 +206,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setCompany(null);
   }, []);
 
+  // Re-fetches the current company row — call this after writing to the
+  // companies table (e.g. from Settings) so components reading company.name
+  // (the sidebar/header, the Dashboard welcome card, etc.) pick up the
+  // change without a full reload.
+  const refreshCompany = useCallback(async () => {
+    if (!userProfile?.company_id) return;
+    const { data, error } = await supabase
+      .from("companies")
+      .select("*")
+      .eq("id", userProfile.company_id)
+      .maybeSingle();
+    if (error) {
+      console.error("Couldn't refresh company:", error);
+      return;
+    }
+    if (data) setCompany(data as Company);
+  }, [userProfile?.company_id]);
+
   return (
     <AuthContext.Provider
-      value={{ session, user, userProfile, company, loading, signUp, signIn, signOut }}
+      value={{ session, user, userProfile, company, loading, signUp, signIn, signOut, refreshCompany }}
     >
       {children}
     </AuthContext.Provider>

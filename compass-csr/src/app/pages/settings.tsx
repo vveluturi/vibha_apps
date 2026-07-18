@@ -13,6 +13,8 @@ import {
 } from "../components/ui/select";
 import { Building2, Bell, User, ChevronDown, Eye, EyeOff, Camera, Shield } from "lucide-react";
 import { notifySettingsUpdated } from "../lib/settings";
+import { useAuth } from "../context/auth-context";
+import supabase from "../../lib/supabase";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -212,18 +214,51 @@ const COMPANY_SIZES = [
  
 export function Settings() {
   const stored = loadSettings();
+  const { user, userProfile, company: authCompany, refreshCompany } = useAuth();
 
   // Role state
   const [role, setRole] = useState<UserRole>(() => loadUserRole());
 
-  // Company profile state
-  const [company, setCompany] = useState<CompanyProfile>(stored.company);
- 
+  // Company profile state — pre-filled from Supabase (via the auth context),
+  // falling back to the local compass_settings_v1 copy per-field whenever
+  // the Supabase value is empty (e.g. a company created before this
+  // migration, or the Supabase fetch failing).
+  const [company, setCompany] = useState<CompanyProfile>(() => ({
+    companyName: authCompany?.name?.trim() || stored.company.companyName,
+    industry: authCompany?.industry || stored.company.industry,
+    companySize: authCompany?.company_size || stored.company.companySize,
+    missionStatement: authCompany?.mission || stored.company.missionStatement,
+    logoUrl: stored.company.logoUrl,
+  }));
+
+  useEffect(() => {
+    if (!authCompany) return;
+    setCompany((prev) => ({
+      ...prev,
+      companyName: authCompany.name?.trim() || prev.companyName,
+      industry: authCompany.industry || prev.industry,
+      companySize: authCompany.company_size || prev.companySize,
+      missionStatement: authCompany.mission || prev.missionStatement,
+    }));
+  }, [authCompany]);
+
   // Notifications state
   const [notifs, setNotifs] = useState<NotificationPrefs>(stored.notifications);
- 
-  // Account state
-  const [account, setAccount] = useState<AccountInfo>(stored.account);
+
+  // Account state — pre-filled from Supabase (userProfile/user), falling
+  // back to the local copy whenever the Supabase value is empty.
+  const [account, setAccount] = useState<AccountInfo>(() => ({
+    name: userProfile?.full_name?.trim() || stored.account.name,
+    email: user?.email?.trim() || stored.account.email,
+  }));
+
+  useEffect(() => {
+    setAccount((prev) => ({
+      name: userProfile?.full_name?.trim() || prev.name,
+      email: user?.email?.trim() || prev.email,
+    }));
+  }, [userProfile, user]);
+
   const [currentPw, setCurrentPw] = useState("");
   const [newPw, setNewPw] = useState("");
   const [showCurrentPw, setShowCurrentPw] = useState(false);
@@ -248,23 +283,77 @@ export function Settings() {
     showToast("Role saved ✓");
   };
 
-  const saveCompany = () => {
+  const saveCompany = async () => {
+    // Local copy is always kept in sync as a backup, regardless of whether
+    // the Supabase write below succeeds.
     const current = loadSettings();
     persistSettings({ ...current, company });
     notifySettingsUpdated();
+
+    if (!authCompany?.id) {
+      showToast("Company profile saved ✓");
+      return;
+    }
+
+    const { data, error } = await supabase
+      .from("companies")
+      .update({
+        name: company.companyName.trim(),
+        industry: company.industry,
+        company_size: company.companySize,
+        mission: company.missionStatement,
+      })
+      .eq("id", authCompany.id)
+      .select();
+
+    // A row-level-security policy that blocks the write shows up as a
+    // *successful* response with zero rows affected, not an `error` — check
+    // for that too so we don't tell the user it saved when it didn't.
+    if (error || !data || data.length === 0) {
+      console.error("Failed to save company profile to Supabase:", error ?? "0 rows affected (likely blocked by RLS)");
+      showToast("Failed to save company profile — saved locally instead");
+      return;
+    }
+
     showToast("Company profile saved ✓");
+    await refreshCompany();
   };
- 
+
   const saveNotifs = (updated: NotificationPrefs) => {
     const current = loadSettings();
     persistSettings({ ...current, notifications: updated });
     showToast("Notification preferences saved ✓");
   };
- 
-  const saveAccount = () => {
-    const current = loadSettings();
-    persistSettings({ ...current, account });
-    showToast("Account info saved ✓");
+
+  const saveAccount = async () => {
+    try {
+      if (userProfile?.id && account.name.trim() && account.name.trim() !== userProfile.full_name) {
+        const { error } = await supabase
+          .from("user_profiles")
+          .update({ full_name: account.name.trim() })
+          .eq("id", userProfile.id);
+        if (error) throw error;
+      }
+
+      if (account.email.trim() && account.email.trim() !== user?.email) {
+        const { error } = await supabase.auth.updateUser({ email: account.email.trim() });
+        if (error) throw error;
+      }
+
+      if (newPw.trim()) {
+        const { error } = await supabase.auth.updateUser({ password: newPw.trim() });
+        if (error) throw error;
+      }
+
+      const current = loadSettings();
+      persistSettings({ ...current, account });
+      setCurrentPw("");
+      setNewPw("");
+      showToast("Account info saved ✓");
+    } catch (err) {
+      console.error("Failed to save account info:", err);
+      showToast(err instanceof Error ? `Failed to save account: ${err.message}` : "Failed to save account info");
+    }
   };
 
   const handleResetOnboarding = () => {

@@ -6,7 +6,6 @@ import {
   MapPin,
   ExternalLink,
   Check,
-  Send,
   Mail,
   Award,
   Sparkles,
@@ -35,6 +34,8 @@ import {
   DialogTitle,
 } from "../components/ui/dialog";
 import { usePrograms } from "../context/programs-context";
+import { useAuth } from "../context/auth-context";
+import supabase from "../../lib/supabase";
 import { formatProgramDate } from "../lib/blueprint-data";
 import { findNonprofitByName, CAUSE_COLORS, getCorporatePartnershipUrl } from "../lib/nonprofits-data";
 import { callClaude, stripCodeFences } from "../lib/claude-client";
@@ -58,6 +59,7 @@ import {
   type ActivityLogEntry,
   type ActivityPhoto,
   loadActivityLog,
+  saveActivityLog,
   addActivityLogEntry,
   activityTotals,
   resizeImageToDataUrl,
@@ -69,6 +71,68 @@ const FALLBACK_PARTNERSHIP_TYPES = [
   "Skills-Based Volunteering",
   "Donation Matching",
 ];
+
+// Maps between the app's Title-Case PartnershipStatus values and the
+// lowercase/snake_case values stored in the Supabase `partnerships` table.
+const STATUS_TO_DB: Record<PartnershipStatus, string> = {
+  Exploring: "exploring",
+  Contacted: "contacted",
+  "In Discussion": "in_discussion",
+  "Active Partner": "active_partner",
+};
+
+const STATUS_FROM_DB: Record<string, PartnershipStatus> = {
+  exploring: "Exploring",
+  contacted: "Contacted",
+  in_discussion: "In Discussion",
+  active_partner: "Active Partner",
+};
+
+// Shape of a row in the Supabase `partnerships` table.
+interface SupabasePartnershipRow {
+  id: string;
+  company_id: string;
+  nonprofit_name: string;
+  partnership_status: string;
+  contact_name: string | null;
+  contact_email: string | null;
+  partnership_type: string | null;
+  start_date: string | null;
+  notes: string | null;
+}
+
+// Shape of a row in the Supabase `activity_logs` table.
+interface SupabaseActivityLogRow {
+  id: string;
+  partnership_id: string;
+  company_id: string;
+  activity_date: string;
+  activity_type: string;
+  description: string | null;
+  employees_participated: number | null;
+  volunteer_hours: number | null;
+  dollars_donated: number | null;
+  events_held: number | null;
+  photos: ActivityPhoto[] | null;
+  created_at?: string;
+}
+
+function activityRowToEntry(row: SupabaseActivityLogRow, storageKey: string, nonprofitName: string): ActivityLogEntry {
+  return {
+    id: row.id,
+    partnershipKey: storageKey,
+    nonprofitName,
+    date: row.activity_date,
+    activityType: row.activity_type as ActivityType,
+    description: row.description ?? "",
+    employeesParticipated: row.employees_participated,
+    volunteerHours: row.volunteer_hours,
+    dollarsDonated: row.dollars_donated,
+    eventsHeld: row.events_held,
+    photos: row.photos ?? [],
+    createdAt: row.created_at ?? new Date().toISOString(),
+  };
+}
 
 // ─── Active Partner confirmation dialog ────────────────────────────────────────
 
@@ -190,7 +254,17 @@ function StatBlock({ label, value }: { label: string; value: string | number }) 
   );
 }
 
-function ActivityLogSection({ storageKey, nonprofitName }: { storageKey: string; nonprofitName: string }) {
+function ActivityLogSection({
+  storageKey,
+  nonprofitName,
+  partnershipRowId,
+  companyId,
+}: {
+  storageKey: string;
+  nonprofitName: string;
+  partnershipRowId: string | null;
+  companyId: string | null;
+}) {
   const [entries, setEntries] = useState<ActivityLogEntry[]>(() =>
     loadActivityLog().filter((e) => e.partnershipKey === storageKey),
   );
@@ -205,6 +279,38 @@ function ActivityLogSection({ storageKey, nonprofitName }: { storageKey: string;
   const [processingPhotos, setProcessingPhotos] = useState(false);
 
   const totals = activityTotals(entries);
+
+  // Load activity logs from Supabase once the partnership row id is known.
+  // Falls back to whatever's already in local state (seeded from
+  // localStorage) if Supabase fails or there's nothing there yet.
+  useEffect(() => {
+    let active = true;
+    if (!partnershipRowId || !companyId) return;
+
+    supabase
+      .from("activity_logs")
+      .select("*")
+      .eq("partnership_id", partnershipRowId)
+      .order("created_at", { ascending: false })
+      .then(({ data, error }) => {
+        if (!active) return;
+        if (error) {
+          console.error("Failed to load activity logs from Supabase:", error);
+          return;
+        }
+        const rows = (data ?? []) as SupabaseActivityLogRow[];
+        if (rows.length === 0) return;
+
+        const mapped = rows.map((row) => activityRowToEntry(row, storageKey, nonprofitName));
+        setEntries(mapped);
+        const others = loadActivityLog().filter((e) => e.partnershipKey !== storageKey);
+        saveActivityLog([...mapped, ...others]);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [partnershipRowId, companyId, storageKey, nonprofitName]);
 
   async function handlePhotoChange(e: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(e.target.files ?? []);
@@ -258,6 +364,27 @@ function ActivityLogSection({ storageKey, nonprofitName }: { storageKey: string;
     setDollars("");
     setEvents("");
     setPhotos([]);
+
+    if (partnershipRowId && companyId) {
+      supabase
+        .from("activity_logs")
+        .insert({
+          id: entry.id,
+          partnership_id: partnershipRowId,
+          company_id: companyId,
+          activity_date: entry.date,
+          activity_type: entry.activityType,
+          description: entry.description,
+          employees_participated: entry.employeesParticipated,
+          volunteer_hours: entry.volunteerHours,
+          dollars_donated: entry.dollarsDonated,
+          events_held: entry.eventsHeld,
+          photos: entry.photos,
+        })
+        .then(({ error }) => {
+          if (error) console.error("Failed to save activity log to Supabase:", error);
+        });
+    }
   }
 
   return (
@@ -388,6 +515,7 @@ export function PartnershipDetail() {
   const location = useLocation();
   const navigate = useNavigate();
   const { programs } = usePrograms();
+  const { company } = useAuth();
 
   const navState = (location.state ?? {}) as { cause?: string; desc?: string };
   const directoryEntry = nonprofitName ? findNonprofitByName(nonprofitName) : undefined;
@@ -430,6 +558,9 @@ export function PartnershipDetail() {
     );
   });
 
+  const [partnershipRowId, setPartnershipRowId] = useState<string | null>(null);
+  const [partnershipLoading, setPartnershipLoading] = useState(true);
+
   const [contactName, setContactName] = useState("");
   const [email, setEmail] = useState("");
   const [message, setMessage] = useState("");
@@ -437,6 +568,7 @@ export function PartnershipDetail() {
 
   const [generatingEmail, setGeneratingEmail] = useState(false);
   const [emailError, setEmailError] = useState<string | null>(null);
+  const [copiedDraft, setCopiedDraft] = useState(false);
 
   const [generatingChecklist, setGeneratingChecklist] = useState(false);
   const [checklistError, setChecklistError] = useState<string | null>(null);
@@ -453,6 +585,75 @@ export function PartnershipDetail() {
       activityLogRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     }
   }, [location.search, record.status]);
+
+  // Load (or create) this partnership's Supabase row, matched by
+  // nonprofit_name + company_id. Merges the status and Active Partner fields
+  // it owns into the local record — checklist/emailDraft/interest stay
+  // purely local, since Phase 2 only asked to migrate status + Active
+  // Partner fields. Falls back to localStorage-only behavior if Supabase
+  // fails or no company is resolved yet.
+  useEffect(() => {
+    let active = true;
+    if (!company?.id || !nonprofit.name) {
+      setPartnershipLoading(false);
+      return;
+    }
+
+    setPartnershipLoading(true);
+    supabase
+      .from("partnerships")
+      .select("*")
+      .eq("company_id", company.id)
+      .eq("nonprofit_name", nonprofit.name)
+      .maybeSingle()
+      .then(async ({ data, error }) => {
+        if (!active) return;
+        if (error) {
+          console.error("Failed to load partnership from Supabase:", error);
+          setPartnershipLoading(false);
+          return;
+        }
+
+        if (data) {
+          const row = data as SupabasePartnershipRow;
+          setPartnershipRowId(row.id);
+          mergeIntoRecord({
+            status: STATUS_FROM_DB[row.partnership_status] ?? "Exploring",
+            ...(row.start_date
+              ? {
+                  activePartnerDetails: {
+                    startDate: row.start_date,
+                    contactName: row.contact_name ?? "",
+                    contactEmail: row.contact_email ?? "",
+                    partnershipType: row.partnership_type ?? "",
+                    notes: row.notes ?? "",
+                  },
+                }
+              : {}),
+          });
+          setPartnershipLoading(false);
+          return;
+        }
+
+        const { data: created, error: insertError } = await supabase
+          .from("partnerships")
+          .insert({ company_id: company.id, nonprofit_name: nonprofit.name, partnership_status: "exploring" })
+          .select()
+          .single();
+        if (!active) return;
+        if (insertError || !created) {
+          console.error("Failed to create partnership in Supabase:", insertError);
+        } else {
+          setPartnershipRowId((created as SupabasePartnershipRow).id);
+        }
+        setPartnershipLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [company?.id, nonprofit.name]);
 
   if (!nonprofitName) {
     return (
@@ -603,21 +804,11 @@ The email should introduce the company, explain why we're interested in partneri
     try {
       await navigator.clipboard.writeText(record.emailDraft);
       toast.success("Email draft copied ✓");
+      setCopiedDraft(true);
+      setTimeout(() => setCopiedDraft(false), 2000);
     } catch {
       toast.error("Couldn't copy — please select and copy manually");
     }
-  }
-
-  function handleSendEmail() {
-    if (!record.emailDraft) return;
-    const subject = `CSR Partnership Inquiry — ${companyProfile.name}`;
-    // Normalize CRLF/CR to a single LF first so encodeURIComponent produces
-    // one clean %0A per line break (not a stray %0D or doubled newline),
-    // and so it correctly escapes apostrophes/quotes/&/# and other
-    // special characters that would otherwise break the mailto URL.
-    const normalizedBody = record.emailDraft.replace(/\r\n|\r/g, "\n");
-    const mailtoLink = `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(normalizedBody)}`;
-    window.location.href = mailtoLink;
   }
 
   function handleSubmitInterest(e: FormEvent<HTMLFormElement>) {
@@ -639,14 +830,7 @@ The email should introduce the company, explain why we're interested in partneri
     const updatedStatus: PartnershipStatus = wasExploring ? "Contacted" : record.status;
     persistRecord({ ...record, status: updatedStatus, updatedAt: new Date().toISOString(), interest });
 
-    if (record.emailDraft) {
-      handleSendEmail();
-      toast.success("Interest logged — opening your mail app with the pre-drafted email…");
-    } else {
-      toast.success(
-        'Interest logged — generate an email draft above, then click "Send Partnership Email" again to open it in your mail app.',
-      );
-    }
+    toast.success("Interest logged ✓");
     setContactName("");
     setEmail("");
     setMessage("");
@@ -917,15 +1101,30 @@ The email should introduce the company, explain why we're interested in partneri
               {emailError && <p className="text-xs text-destructive">{emailError}</p>}
               {record.emailDraft && (
                 <div className="space-y-2">
-                  <Textarea readOnly value={record.emailDraft} className="min-h-40 text-sm" />
-                  <div className="flex items-center gap-2">
-                    <Button type="button" variant="outline" size="sm" onClick={handleSendEmail} className="gap-1.5 text-xs">
-                      <Send className="h-3.5 w-3.5" /> Send Email
-                    </Button>
-                    <Button type="button" variant="ghost" size="sm" onClick={() => void handleCopyEmail()} className="gap-1.5 text-xs">
-                      <Copy className="h-3.5 w-3.5" /> Copy Email Draft
+                  <div className="relative">
+                    <Textarea readOnly value={record.emailDraft} className="min-h-40 text-sm pr-28" />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => void handleCopyEmail()}
+                      className="absolute top-2 right-2 gap-1.5 text-xs bg-white"
+                    >
+                      {copiedDraft ? (
+                        <>
+                          <Check className="h-3.5 w-3.5" /> Copied! ✓
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="h-3.5 w-3.5" /> Copy Email Draft
+                        </>
+                      )}
                     </Button>
                   </div>
+                  <p className="text-xs text-muted-foreground">
+                    Copy this email and send it from your own email client (Gmail, Outlook, Yahoo, etc.) to the
+                    nonprofit's partnerships team.
+                  </p>
                 </div>
               )}
               {corporatePartnershipUrl ? (
@@ -996,28 +1195,19 @@ The email should introduce the company, explain why we're interested in partneri
                     className="min-h-28"
                   />
                 </div>
-                <div className="space-y-1.5">
-                  <Button
-                    type="submit"
-                    className="gap-1.5 bg-primary hover:bg-primary/90 text-primary-foreground"
-                    title="Opens a pre-drafted email in your mail app"
-                  >
-                    <Mail className="h-4 w-4" /> Send Partnership Email
-                  </Button>
-                  <p className="text-xs text-muted-foreground">
-                    Opens a pre-drafted email in your mail app and logs your interest with {nonprofit.name}.
-                  </p>
-                </div>
+                <Button
+                  type="submit"
+                  className="gap-1.5 bg-primary hover:bg-primary/90 text-primary-foreground"
+                >
+                  <Mail className="h-4 w-4" /> Send Partnership Email
+                </Button>
               </form>
 
               {record.interest && (
                 <div className="mt-6 pt-6 border-t border-border space-y-4">
                   <div className="rounded-lg border border-primary/20 bg-primary/5 px-4 py-3">
                     <p className="text-sm text-foreground">
-                      📋{" "}
-                      {record.emailDraft
-                        ? "We've opened your mail app with the pre-drafted email — review it and hit send."
-                        : 'Generate an email draft above, then use "Send Partnership Email" to open it in your mail app.'}
+                      📋 Your email draft is ready — copy it above and send it from your own email
                     </p>
                   </div>
                   <div>

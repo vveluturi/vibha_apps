@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card";
 import { Button } from "../components/ui/button";
@@ -10,6 +10,7 @@ import { PROGRAM_STATUS_STYLES } from "../types/program";
 import { formatProgramDate } from "../lib/blueprint-data";
 import { loadConnected } from "../lib/nonprofits-data";
 import { useAuth } from "../context/auth-context";
+import supabase from "../../lib/supabase";
 import { loadTeamMembers } from "../lib/team";
 import { NameAvatar } from "../components/member-avatar";
 import {
@@ -172,14 +173,38 @@ function getNextStepPrompt(programs: SavedProgram[], role: UserRole, unreadFeedb
 }
 
 export function Dashboard() {
-  const { programs } = usePrograms();
+  const { programs, loading: programsLoading } = usePrograms();
   const { resetWizard } = useWizard();
   const navigate = useNavigate();
   const [connectedCount] = useState(() => loadConnected().length);
-  const [teamCount] = useState(() => loadTeamMembers().length);
+  const [teamCount, setTeamCount] = useState(() => loadTeamMembers().length);
   const { company } = useAuth();
   const companyName = company?.name?.trim() || "Your Company";
   const role = getUserRole();
+
+  // "Team Members Engaged" reflects real signed-up teammates (user_profiles
+  // rows in this company) rather than the local task-assignment roster.
+  // Falls back to the local roster count if the Supabase query fails.
+  useEffect(() => {
+    if (!company?.id) return;
+    let active = true;
+    supabase
+      .from("user_profiles")
+      .select("id", { count: "exact", head: true })
+      .eq("company_id", company.id)
+      .then(({ count, error }) => {
+        if (!active) return;
+        if (error) {
+          console.error("Failed to load team member count from Supabase:", error);
+          setTeamCount(loadTeamMembers().length);
+        } else {
+          setTeamCount(count ?? 0);
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [company?.id]);
 
   const activePrograms = programs.filter((p) => p.status !== "Archived");
   const pinnedPrograms = activePrograms.filter((p) => p.pinned);
@@ -490,8 +515,21 @@ export function Dashboard() {
           )}
         </div>
 
-        {/* Empty state */}
-        {activePrograms.length === 0 ? (
+        {/* Loading skeleton */}
+        {programsLoading ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+            {[0, 1, 2].map((i) => (
+              <Card key={i} className="border-border shadow-sm">
+                <CardContent className="p-5 space-y-3">
+                  <div className="h-4 w-2/3 rounded bg-muted animate-pulse" />
+                  <div className="h-3 w-1/3 rounded bg-muted animate-pulse" />
+                  <div className="h-8 w-full rounded bg-muted animate-pulse mt-2" />
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        ) : /* Empty state */
+        activePrograms.length === 0 ? (
           <Card>
             <CardContent className="flex flex-col items-center justify-center py-16">
               <div className="p-4 bg-muted rounded-full mb-4">

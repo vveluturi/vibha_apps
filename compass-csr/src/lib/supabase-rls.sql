@@ -47,3 +47,69 @@ using (true);
 create policy "Public can accept invites"
 on invites for update
 using (true);
+
+-- ─── Phase 2: tasks, partnerships, activity_logs, task_suggestions ─────────
+
+-- Helper used by the policies below — resolves the calling user's company_id
+-- once, security definer so it can read user_profiles regardless of that
+-- table's own RLS policies.
+create or replace function get_my_company_id()
+returns uuid
+language sql
+security definer
+stable
+as $$
+  select company_id from user_profiles where id = auth.uid();
+$$;
+
+-- Tasks policies
+CREATE POLICY "Users can view company tasks"
+ON tasks FOR SELECT
+USING (company_id = get_my_company_id());
+
+CREATE POLICY "Users can insert company tasks"
+ON tasks FOR INSERT
+WITH CHECK (company_id = get_my_company_id());
+
+CREATE POLICY "Users can update company tasks"
+ON tasks FOR UPDATE
+USING (company_id = get_my_company_id());
+
+CREATE POLICY "Users can delete company tasks"
+ON tasks FOR DELETE
+USING (company_id = get_my_company_id());
+
+-- Partnerships policies
+CREATE POLICY "Users can view company partnerships"
+ON partnerships FOR SELECT
+USING (company_id = get_my_company_id());
+
+CREATE POLICY "Users can insert company partnerships"
+ON partnerships FOR INSERT
+WITH CHECK (company_id = get_my_company_id());
+
+CREATE POLICY "Users can update company partnerships"
+ON partnerships FOR UPDATE
+USING (company_id = get_my_company_id());
+
+-- Activity logs policies
+CREATE POLICY "Users can view company activity logs"
+ON activity_logs FOR SELECT
+USING (company_id = get_my_company_id());
+
+CREATE POLICY "Users can insert company activity logs"
+ON activity_logs FOR INSERT
+WITH CHECK (company_id = get_my_company_id());
+
+-- Task suggestions policies
+CREATE POLICY "Users can view company task suggestions"
+ON task_suggestions FOR SELECT
+USING (company_id = get_my_company_id());
+
+CREATE POLICY "Users can insert task suggestions"
+ON task_suggestions FOR INSERT
+WITH CHECK (company_id = get_my_company_id());
+
+CREATE POLICY "Users can update task suggestions"
+ON task_suggestions FOR UPDATE
+USING (company_id = get_my_company_id());

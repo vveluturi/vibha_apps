@@ -63,6 +63,12 @@ export interface ProgramIntake {
   step3: Step3Data;
 }
 
+export interface ProgramNote {
+  id: string;
+  text: string;
+  createdAt: string;
+}
+
 export interface SavedProgram {
   id: string;
   name: string;
@@ -71,6 +77,7 @@ export interface SavedProgram {
   pinned: boolean;
   intake: ProgramIntake;
   blueprint: BlueprintData;
+  notes?: ProgramNote[];
 }
 
 export const PROGRAM_STATUS_STYLES: Record<

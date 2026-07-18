@@ -41,9 +41,12 @@ import { Input } from "../components/ui/input";
 import { Textarea } from "../components/ui/textarea";
 import { Label } from "../components/ui/label";
 import { usePrograms } from "../context/programs-context";
+import { useAuth } from "../context/auth-context";
+import supabase from "../../lib/supabase";
 import { loadPartnerships, partnershipKey } from "../lib/partnership-status";
 import { loadTeamMembers, loadCurrentUser, type TeamMember } from "../lib/team";
 import { MemberAvatar } from "../components/member-avatar";
+import type { ProgramNote } from "../types/program";
 import {
   TaskStatusDropdown,
   AssigneeControl,
@@ -54,6 +57,7 @@ import {
 import {
   getProgramTasks,
   setTaskState,
+  getTaskId,
   generateAiSuggestedDeadlines,
   effectiveDeadline,
   daysFromToday,
@@ -105,6 +109,22 @@ interface CustomTask {
 
 const CUSTOM_TASKS_KEY = "compass_custom_tasks_v1";
 const CUSTOM_TASK_PREFIX = "custom::";
+
+// Shape of a row in the Supabase `tasks` table.
+interface SupabaseTaskRow {
+  id: string;
+  program_id: string;
+  company_id: string;
+  phase_label: string;
+  task_text: string;
+  status: TaskStatus;
+  note: string | null;
+  assigned_to: string | null;
+  deadline: string | null;
+  ai_suggested_deadline: string | null;
+  is_custom: boolean;
+  created_at?: string;
+}
 
 function loadCustomTasksStore(): Record<string, CustomTask[]> {
   try {
@@ -988,12 +1008,18 @@ export function ProgramDashboard() {
   const { id } = useParams();
   const navigate = useNavigate();
   const { getProgram, updateProgram } = usePrograms();
+  const { company } = useAuth();
 
   const program = id ? getProgram(id) : undefined;
   const role = getUserRole();
 
   const [tasks, setTasks] = useState<TaskState[]>(() => (program ? getProgramTasks(program) : []));
   const [customTasks, setCustomTasks] = useState<CustomTask[]>(() => (program ? loadCustomTasks(program.id) : []));
+  // Maps a blueprint-derived TaskState.taskId to its Supabase `tasks` row id —
+  // TaskState itself has no id field, so this side-map lets task updates
+  // target the right row without threading an id through lib/tasks.ts.
+  const [taskRowIds, setTaskRowIds] = useState<Record<string, string>>({});
+  const [tasksLoading, setTasksLoading] = useState(true);
   const [generatingDeadlines, setGeneratingDeadlines] = useState(false);
   const [addTaskPhase, setAddTaskPhase] = useState<string | null>(null);
   const [suggestModalOpen, setSuggestModalOpen] = useState(false);
@@ -1001,15 +1027,138 @@ export function ProgramDashboard() {
   const [suggestions, setSuggestions] = useState<TaskSuggestion[]>(() => loadSuggestions());
   const [learnMoreSuggestion, setLearnMoreSuggestion] = useState<AISuggestion | null>(null);
 
-  // Refresh tasks whenever the underlying program changes (e.g. navigating between programs)
+  // Load tasks for this program from Supabase, generating + batch-inserting
+  // the blueprint's default tasks on first load if none exist yet. Every AI
+  // task read back is also mirrored into the lib/tasks.ts localStorage store
+  // so other pages (my-tasks.tsx, weekly-digest.tsx) that read/write that
+  // store directly keep working unmodified. Falls back to localStorage-only
+  // behavior if Supabase fails or no company is resolved yet.
   useEffect(() => {
-    setTasks(program ? getProgramTasks(program) : []);
-    setCustomTasks(program ? loadCustomTasks(program.id) : []);
-  }, [program?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+    let active = true;
+    if (!program) {
+      setTasksLoading(false);
+      return;
+    }
+
+    if (!company?.id) {
+      setTasks(getProgramTasks(program));
+      setCustomTasks(loadCustomTasks(program.id));
+      setTasksLoading(false);
+      return;
+    }
+
+    setTasksLoading(true);
+    supabase
+      .from("tasks")
+      .select("*")
+      .eq("program_id", program.id)
+      .then(async ({ data, error }) => {
+        if (!active) return;
+        if (error) {
+          console.error("Failed to load tasks from Supabase:", error);
+          setTasks(getProgramTasks(program));
+          setCustomTasks(loadCustomTasks(program.id));
+          setTasksLoading(false);
+          return;
+        }
+
+        const rows = (data ?? []) as SupabaseTaskRow[];
+
+        if (rows.length === 0) {
+          const blueprintTasks = getProgramTasks(program);
+          const rowIdByTaskId: Record<string, string> = {};
+          const toInsert = blueprintTasks.map((t) => {
+            const rowId = crypto.randomUUID();
+            rowIdByTaskId[t.taskId] = rowId;
+            return {
+              id: rowId,
+              program_id: program.id,
+              company_id: company.id,
+              phase_label: t.phaseLabel,
+              task_text: t.taskText,
+              status: t.status,
+              note: t.statusNote,
+              assigned_to: t.assignedTo,
+              deadline: t.deadline,
+              ai_suggested_deadline: t.aiSuggestedDeadline,
+              is_custom: false,
+            };
+          });
+
+          if (!active) return;
+          setTaskRowIds(rowIdByTaskId);
+          setTasks(blueprintTasks);
+          setCustomTasks(loadCustomTasks(program.id));
+          setTasksLoading(false);
+
+          if (toInsert.length > 0) {
+            supabase
+              .from("tasks")
+              .insert(toInsert)
+              .then(({ error: insertError }) => {
+                if (insertError) console.error("Failed to batch-insert tasks to Supabase:", insertError);
+              });
+          }
+          return;
+        }
+
+        const rowIdByTaskId: Record<string, string> = {};
+        const aiTasks: TaskState[] = [];
+        const custom: CustomTask[] = [];
+        for (const row of rows) {
+          if (row.is_custom) {
+            custom.push({
+              id: row.id,
+              programId: program.id,
+              phaseLabel: row.phase_label,
+              text: row.task_text,
+              assignedTo: row.assigned_to,
+              deadline: row.deadline,
+              status: row.status,
+              statusNote: row.note ?? "",
+              createdAt: row.created_at ?? new Date().toISOString(),
+            });
+          } else {
+            const taskId = getTaskId(row.phase_label, row.task_text);
+            rowIdByTaskId[taskId] = row.id;
+            const taskState: TaskState = {
+              programId: program.id,
+              taskId,
+              phaseLabel: row.phase_label,
+              taskText: row.task_text,
+              assignedTo: row.assigned_to,
+              deadline: row.deadline,
+              aiSuggestedDeadline: row.ai_suggested_deadline,
+              status: row.status,
+              statusNote: row.note ?? "",
+            };
+            aiTasks.push(taskState);
+            setTaskState(program.id, row.phase_label, row.task_text, {
+              assignedTo: taskState.assignedTo,
+              deadline: taskState.deadline,
+              aiSuggestedDeadline: taskState.aiSuggestedDeadline,
+              status: taskState.status,
+              statusNote: taskState.statusNote,
+            });
+          }
+        }
+
+        if (!active) return;
+        setTaskRowIds(rowIdByTaskId);
+        setTasks(aiTasks);
+        setCustomTasks(custom);
+        saveCustomTasks(program.id, custom);
+        setTasksLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [program?.id, company?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Generate AI-suggested deadlines once per program, only if any task is missing one
   useEffect(() => {
-    if (!program) return;
+    if (!program || tasksLoading) return;
     const hasMissing = getProgramTasks(program).some((t) => !t.aiSuggestedDeadline);
     if (!hasMissing) return;
 
@@ -1022,7 +1171,7 @@ export function ProgramDashboard() {
       })
       .finally(() => setGeneratingDeadlines(false));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [program?.id]);
+  }, [program?.id, tasksLoading]);
 
   const activePartnerNames = useMemo(() => {
     const names = new Set<string>();
@@ -1087,11 +1236,35 @@ export function ProgramDashboard() {
     }
   }
 
+  // Builds the Supabase column patch for a tasks-table row from a TaskState
+  // patch — only the fields the task explicitly calls out (status, note,
+  // assigned_to, deadline) are ever written.
+  function toTaskRowPatch(patch: Partial<TaskState>): Record<string, unknown> {
+    const dbPatch: Record<string, unknown> = {};
+    if ("status" in patch) dbPatch.status = patch.status;
+    if ("statusNote" in patch) dbPatch.note = patch.statusNote;
+    if ("assignedTo" in patch) dbPatch.assigned_to = patch.assignedTo;
+    if ("deadline" in patch) dbPatch.deadline = patch.deadline;
+    return dbPatch;
+  }
+
   function handleTaskUpdate(task: TaskState, patch: Partial<TaskState>) {
     setTaskState(program!.id, task.phaseLabel, task.taskText, patch);
     const nextTasks = getProgramTasks(program!);
     setTasks(nextTasks);
     syncProgramStatus([...nextTasks, ...customTasks.map(customTaskToTaskState)]);
+
+    const rowId = taskRowIds[task.taskId];
+    const dbPatch = toTaskRowPatch(patch);
+    if (rowId && Object.keys(dbPatch).length > 0) {
+      supabase
+        .from("tasks")
+        .update(dbPatch)
+        .eq("id", rowId)
+        .then(({ error }) => {
+          if (error) console.error("Failed to update task in Supabase:", error);
+        });
+    }
   }
 
   function handleCustomTaskUpdate(customId: string, patch: Partial<Pick<TaskState, "status" | "assignedTo" | "deadline" | "statusNote">>) {
@@ -1099,6 +1272,17 @@ export function ProgramDashboard() {
     setCustomTasks(updated);
     saveCustomTasks(program!.id, updated);
     syncProgramStatus([...tasks, ...updated.map(customTaskToTaskState)]);
+
+    const dbPatch = toTaskRowPatch(patch);
+    if (Object.keys(dbPatch).length > 0) {
+      supabase
+        .from("tasks")
+        .update(dbPatch)
+        .eq("id", customId)
+        .then(({ error }) => {
+          if (error) console.error("Failed to update custom task in Supabase:", error);
+        });
+    }
   }
 
   function handleAnyTaskUpdate(task: TaskState, patch: Partial<TaskState>) {
@@ -1113,6 +1297,16 @@ export function ProgramDashboard() {
     const aiPhaseTasks = tasks.filter((t) => t.phaseLabel === phaseLabel);
     for (const t of aiPhaseTasks) {
       setTaskState(program!.id, t.phaseLabel, t.taskText, { status: "done" });
+      const rowId = taskRowIds[t.taskId];
+      if (rowId) {
+        supabase
+          .from("tasks")
+          .update({ status: "done" })
+          .eq("id", rowId)
+          .then(({ error }) => {
+            if (error) console.error("Failed to mark task done in Supabase:", error);
+          });
+      }
     }
     const nextTasks = getProgramTasks(program!);
     setTasks(nextTasks);
@@ -1122,6 +1316,16 @@ export function ProgramDashboard() {
     );
     setCustomTasks(updatedCustom);
     saveCustomTasks(program!.id, updatedCustom);
+    for (const ct of updatedCustom) {
+      if (ct.phaseLabel !== phaseLabel) continue;
+      supabase
+        .from("tasks")
+        .update({ status: "done" })
+        .eq("id", ct.id)
+        .then(({ error }) => {
+          if (error) console.error("Failed to mark custom task done in Supabase:", error);
+        });
+    }
 
     syncProgramStatus([...nextTasks, ...updatedCustom.map(customTaskToTaskState)]);
 
@@ -1144,6 +1348,26 @@ export function ProgramDashboard() {
     setCustomTasks(updated);
     saveCustomTasks(program!.id, updated);
     setAddTaskPhase(null);
+
+    if (company?.id) {
+      supabase
+        .from("tasks")
+        .insert({
+          id: newTask.id,
+          program_id: program!.id,
+          company_id: company.id,
+          phase_label: newTask.phaseLabel,
+          task_text: newTask.text,
+          status: newTask.status,
+          note: newTask.statusNote,
+          assigned_to: newTask.assignedTo,
+          deadline: newTask.deadline,
+          is_custom: true,
+        })
+        .then(({ error }) => {
+          if (error) console.error("Failed to save custom task to Supabase:", error);
+        });
+    }
   }
 
   function handleSubmitSuggestion(fields: { description: string; phase: string; reason: string; suggestedBy: string }) {
@@ -1162,6 +1386,24 @@ export function ProgramDashboard() {
     setSuggestions(all);
     setSuggestModalOpen(false);
     toast.success("Task suggestion submitted to your program Admin ✓");
+
+    if (company?.id) {
+      supabase
+        .from("task_suggestions")
+        .insert({
+          id: newSuggestion.id,
+          program_id: newSuggestion.programId,
+          company_id: company.id,
+          description: newSuggestion.description,
+          phase: newSuggestion.phase,
+          reason: newSuggestion.reason,
+          suggested_by: newSuggestion.suggestedBy,
+          status: newSuggestion.status,
+        })
+        .then(({ error }) => {
+          if (error) console.error("Failed to save task suggestion to Supabase:", error);
+        });
+    }
   }
 
   function handleApproveSuggestion(suggestion: TaskSuggestion) {
@@ -1187,6 +1429,34 @@ export function ProgramDashboard() {
     setSuggestions(updatedSuggestions);
 
     toast.success(`Task added to ${suggestion.phase} timeline ✓`);
+
+    if (company?.id) {
+      supabase
+        .from("tasks")
+        .insert({
+          id: newTask.id,
+          program_id: program!.id,
+          company_id: company.id,
+          phase_label: newTask.phaseLabel,
+          task_text: newTask.text,
+          status: newTask.status,
+          note: newTask.statusNote,
+          assigned_to: newTask.assignedTo,
+          deadline: newTask.deadline,
+          is_custom: true,
+        })
+        .then(({ error }) => {
+          if (error) console.error("Failed to insert approved task to Supabase:", error);
+        });
+
+      supabase
+        .from("task_suggestions")
+        .update({ status: "approved" })
+        .eq("id", suggestion.id)
+        .then(({ error }) => {
+          if (error) console.error("Failed to update task suggestion status in Supabase:", error);
+        });
+    }
   }
 
   function handleDismissSuggestion(suggestion: TaskSuggestion) {
@@ -1196,6 +1466,16 @@ export function ProgramDashboard() {
     saveSuggestions(updatedSuggestions);
     setSuggestions(updatedSuggestions);
     toast.success("Suggestion dismissed");
+
+    if (company?.id) {
+      supabase
+        .from("task_suggestions")
+        .update({ status: "dismissed" })
+        .eq("id", suggestion.id)
+        .then(({ error }) => {
+          if (error) console.error("Failed to update task suggestion status in Supabase:", error);
+        });
+    }
   }
 
   const totalTasks = allTasks.length;
@@ -1313,7 +1593,11 @@ export function ProgramDashboard() {
                     <MessageSquare className="h-3.5 w-3.5" /> Feedback
                   </TabsTrigger>
                 </TabsList>
-                {generatingDeadlines && (
+                {tasksLoading ? (
+                  <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <Sparkles className="h-3.5 w-3.5 animate-pulse" /> Loading tasks…
+                  </span>
+                ) : generatingDeadlines && (
                   <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
                     <Sparkles className="h-3.5 w-3.5 animate-pulse" /> Suggesting deadlines…
                   </span>
@@ -1497,7 +1781,27 @@ export function ProgramDashboard() {
             </Card>
 
             {/* Program Notes */}
-            <ProgramNotesCard programId={program.id} />
+            <ProgramNotesCard
+              notes={program.notes && program.notes.length > 0 ? program.notes : loadProgramNotes(program.id)}
+              onAddNote={(text) => {
+                const newNote: ProgramNote = {
+                  id: crypto.randomUUID(),
+                  text,
+                  createdAt: new Date().toISOString(),
+                };
+                const existing = program.notes && program.notes.length > 0 ? program.notes : loadProgramNotes(program.id);
+                const updated = [...existing, newNote];
+                saveProgramNotes(program.id, updated);
+                updateProgram(program.id, { notes: updated });
+                toast.success("Note added ✓");
+              }}
+              onDeleteNote={(noteId) => {
+                const existing = program.notes && program.notes.length > 0 ? program.notes : loadProgramNotes(program.id);
+                const updated = existing.filter((n) => n.id !== noteId);
+                saveProgramNotes(program.id, updated);
+                updateProgram(program.id, { notes: updated });
+              }}
+            />
           </div>
         </div>
 
@@ -1562,13 +1866,8 @@ export function ProgramDashboard() {
   );
 }
 
-// ─── Program notes (bullet list, one localStorage entry per program) ──────────
-
-interface ProgramNote {
-  id: string;
-  text: string;
-  createdAt: string;
-}
+// ─── Program notes (bullet list; backed by programs.notes in Supabase, with a
+// localStorage mirror used as a fallback when that column is empty/unset) ──────
 
 const NOTES_KEY = "compass_notes_v1";
 
@@ -1598,28 +1897,21 @@ function saveProgramNotes(programId: string, notes: ProgramNote[]) {
   saveNotesStore(store);
 }
 
-function ProgramNotesCard({ programId }: { programId: string }) {
-  const [notes, setNotes] = useState<ProgramNote[]>(() => loadProgramNotes(programId));
+function ProgramNotesCard({
+  notes,
+  onAddNote,
+  onDeleteNote,
+}: {
+  notes: ProgramNote[];
+  onAddNote: (text: string) => void;
+  onDeleteNote: (id: string) => void;
+}) {
   const [draft, setDraft] = useState("");
 
   function handleAddNote() {
     if (!draft.trim()) return;
-    const newNote: ProgramNote = {
-      id: crypto.randomUUID(),
-      text: draft.trim(),
-      createdAt: new Date().toISOString(),
-    };
-    const updated = [...notes, newNote];
-    setNotes(updated);
-    saveProgramNotes(programId, updated);
+    onAddNote(draft.trim());
     setDraft("");
-    toast.success("Note added ✓");
-  }
-
-  function handleDeleteNote(id: string) {
-    const updated = notes.filter((n) => n.id !== id);
-    setNotes(updated);
-    saveProgramNotes(programId, updated);
   }
 
   return (
@@ -1645,7 +1937,7 @@ function ProgramNotesCard({ programId }: { programId: string }) {
                 </div>
                 <button
                   type="button"
-                  onClick={() => handleDeleteNote(note.id)}
+                  onClick={() => onDeleteNote(note.id)}
                   aria-label="Delete note"
                   className="flex-shrink-0 text-muted-foreground hover:text-destructive transition-colors"
                 >
