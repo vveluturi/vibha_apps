@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router";
 import { toast } from "sonner";
 import {
@@ -15,6 +15,7 @@ import {
   Plus,
   X,
   Lightbulb,
+  Sparkles,
 } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
@@ -29,12 +30,21 @@ import {
   DialogTitle,
 } from "../components/ui/dialog";
 import { usePrograms } from "../context/programs-context";
+import { useAuth } from "../context/auth-context";
+import supabase from "../../lib/supabase";
 import { useCompanyName } from "../lib/settings";
 import { formatProgramDate } from "../lib/blueprint-data";
 import { countCompletedTasks } from "../lib/blueprint-tasks";
 import { CAUSE_COLORS, findNonprofitByName } from "../lib/nonprofits-data";
 import { loadPartnerships, type PartnershipRecord } from "../lib/partnership-status";
-import { loadActivityLog, activityTotals, resizeImageToDataUrl, type ActivityLogEntry } from "../lib/partnership-activity";
+import {
+  loadActivityLog,
+  activityTotals,
+  resizeImageToDataUrl,
+  type ActivityLogEntry,
+  type ActivityType,
+  type ActivityPhoto,
+} from "../lib/partnership-activity";
 import { loadGalleryPhotos, addGalleryPhotos, type GalleryPhoto } from "../lib/company-gallery";
 import { exportElementToPdf, buildPdfFilename } from "../lib/pdf-export";
 import { shouldShowFeatureBanner, dismissRecommendation, DISMISS_KEYS } from "../lib/feature-recommendations";
@@ -62,6 +72,77 @@ function resolvePartnerships(): ResolvedPartnership[] {
     const cause = findNonprofitByName(name)?.cause ?? "General Impact";
     return { key, nonprofitName: name, cause, record };
   });
+}
+
+// Shape of a row in the Supabase `partnerships` table.
+interface SupabasePartnershipRow {
+  id: string;
+  company_id: string;
+  nonprofit_name: string;
+  partnership_status: string;
+  contact_name: string | null;
+  contact_email: string | null;
+  partnership_type: string | null;
+  start_date: string | null;
+  notes: string | null;
+}
+
+// Shape of a row in the Supabase `activity_logs` table.
+interface SupabaseActivityLogRow {
+  id: string;
+  partnership_id: string;
+  company_id: string;
+  activity_date: string;
+  activity_type: string;
+  description: string | null;
+  employees_participated: number | null;
+  volunteer_hours: number | null;
+  dollars_donated: number | null;
+  events_held: number | null;
+  photos: ActivityPhoto[] | null;
+  created_at?: string;
+}
+
+// Only the "Active Partner" rows are kept — matches this page's only use of
+// resolved partnerships (the Active Partnerships section + cause areas).
+function activePartnershipRowToResolved(row: SupabasePartnershipRow): ResolvedPartnership {
+  const cause = findNonprofitByName(row.nonprofit_name)?.cause ?? "General Impact";
+  return {
+    key: row.id,
+    nonprofitName: row.nonprofit_name,
+    cause,
+    record: {
+      status: "Active Partner",
+      updatedAt: new Date().toISOString(),
+      nonprofitName: row.nonprofit_name,
+      activePartnerDetails: row.start_date
+        ? {
+            startDate: row.start_date,
+            contactName: row.contact_name ?? "",
+            contactEmail: row.contact_email ?? "",
+            partnershipType: row.partnership_type ?? "",
+            notes: row.notes ?? "",
+          }
+        : undefined,
+    },
+  };
+}
+
+function activityRowToEntry(row: SupabaseActivityLogRow, nonprofitName: string): ActivityLogEntry {
+  return {
+    id: row.id,
+    partnershipKey: row.partnership_id,
+    nonprofitName,
+    date: row.activity_date,
+    activityType: row.activity_type as ActivityType,
+    description: row.description ?? "",
+    employeesParticipated: row.employees_participated,
+    volunteerHours: row.volunteer_hours,
+    dollarsDonated: row.dollars_donated,
+    eventsHeld: row.events_held,
+    photos: row.photos ?? [],
+    createdAt: row.created_at ?? new Date().toISOString(),
+  };
 }
 
 // ─── Stat card ──────────────────────────────────────────────────────────────
@@ -183,12 +264,19 @@ function AddPhotosDialog({
 
 export function ImpactReport() {
   const { programs } = usePrograms();
+  const { company } = useAuth();
   const companyName = useCompanyName();
   const reportRef = useRef<HTMLDivElement>(null);
 
   const [addPhotosOpen, setAddPhotosOpen] = useState(false);
   const [galleryPhotos, setGalleryPhotos] = useState<GalleryPhoto[]>(() => loadGalleryPhotos());
-  const [activityEntries] = useState<ActivityLogEntry[]>(() => loadActivityLog());
+  // Seeded from localStorage as the fallback; overwritten by Supabase data
+  // once that fetch resolves (see effect below).
+  const [partnerships, setPartnerships] = useState<ResolvedPartnership[]>(() =>
+    resolvePartnerships().filter((p) => p.record.status === "Active Partner"),
+  );
+  const [activityEntries, setActivityEntries] = useState<ActivityLogEntry[]>(() => loadActivityLog());
+  const [metricsLoading, setMetricsLoading] = useState(true);
   const [lightboxItem, setLightboxItem] = useState<GalleryItem | null>(null);
   const [showBanner, setShowBanner] = useState(() => shouldShowFeatureBanner("impact-report"));
 
@@ -197,8 +285,58 @@ export function ImpactReport() {
     setShowBanner(false);
   }
 
+  // Load partnerships + activity logs from Supabase, company-scoped. Falls
+  // back to the localStorage-seeded state above if Supabase fails or no
+  // company is resolved yet.
+  useEffect(() => {
+    let active = true;
+    if (!company?.id) {
+      setMetricsLoading(false);
+      return;
+    }
+
+    setMetricsLoading(true);
+    Promise.all([
+      supabase.from("partnerships").select("*").eq("company_id", company.id),
+      supabase
+        .from("activity_logs")
+        .select("*")
+        .eq("company_id", company.id)
+        .order("created_at", { ascending: false }),
+    ]).then(([partnershipsRes, activityRes]) => {
+      if (!active) return;
+      if (partnershipsRes.error || activityRes.error) {
+        console.error(
+          "Failed to load impact report data from Supabase:",
+          partnershipsRes.error ?? activityRes.error,
+        );
+        setMetricsLoading(false);
+        return;
+      }
+
+      const partnershipRows = (partnershipsRes.data ?? []) as SupabasePartnershipRow[];
+      const nameById = new Map(partnershipRows.map((row) => [row.id, row.nonprofit_name]));
+
+      setPartnerships(
+        partnershipRows
+          .filter((row) => row.partnership_status === "active_partner")
+          .map(activePartnershipRowToResolved),
+      );
+
+      const activityRows = (activityRes.data ?? []) as SupabaseActivityLogRow[];
+      setActivityEntries(
+        activityRows.map((row) => activityRowToEntry(row, nameById.get(row.partnership_id) ?? "Unknown")),
+      );
+
+      setMetricsLoading(false);
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [company?.id]);
+
   const activePrograms = useMemo(() => programs.filter((p) => p.status !== "Archived"), [programs]);
-  const partnerships = useMemo(() => resolvePartnerships(), []);
   const activePartnerships = useMemo(
     () => partnerships.filter((p) => p.record.status === "Active Partner"),
     [partnerships],
@@ -289,6 +427,11 @@ export function ImpactReport() {
       </div>
 
       {/* Summary metrics */}
+      {metricsLoading && (
+        <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground -mb-6">
+          <Sparkles className="h-3.5 w-3.5 animate-pulse" /> Loading impact data…
+        </span>
+      )}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         <StatCard label="Total Active Programs" value={activePrograms.length} icon={TrendingUp} />
         <StatCard label="Total Volunteer Hours" value={totals.volunteerHours} icon={CalendarDays} />

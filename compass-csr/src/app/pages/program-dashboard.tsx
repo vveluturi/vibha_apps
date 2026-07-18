@@ -110,13 +110,15 @@ interface CustomTask {
 const CUSTOM_TASKS_KEY = "compass_custom_tasks_v1";
 const CUSTOM_TASK_PREFIX = "custom::";
 
-// Shape of a row in the Supabase `tasks` table.
+// Shape of a row in the Supabase `tasks` table. Note: `phase`/`label` (not
+// `phase_label`/`task_text`), and `assigned_to` is a uuid FK to
+// user_profiles.id, not a free-text name — see assignedToId()/memberNameById.
 interface SupabaseTaskRow {
   id: string;
   program_id: string;
   company_id: string;
-  phase_label: string;
-  task_text: string;
+  phase: string;
+  label: string;
   status: TaskStatus;
   note: string | null;
   assigned_to: string | null;
@@ -1027,6 +1029,47 @@ export function ProgramDashboard() {
   const [suggestions, setSuggestions] = useState<TaskSuggestion[]>(() => loadSuggestions());
   const [learnMoreSuggestion, setLearnMoreSuggestion] = useState<AISuggestion | null>(null);
 
+  // tasks.assigned_to is a uuid FK to user_profiles, but this app's team
+  // roster (lib/team.ts) is a purely local, name-based list that isn't
+  // necessarily tied to real accounts. These maps translate between a
+  // display name and a user_profiles.id whenever one exists for this
+  // company, so assignment can sync to Supabase without forcing every team
+  // member to have signed up.
+  const [memberIdByName, setMemberIdByName] = useState<Record<string, string>>({});
+  const [memberNameById, setMemberNameById] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    let active = true;
+    if (!company?.id) return;
+    supabase
+      .from("user_profiles")
+      .select("id, full_name")
+      .eq("company_id", company.id)
+      .then(({ data, error }) => {
+        if (!active) return;
+        if (error) {
+          console.error("Failed to load user profiles for task assignment sync:", error);
+          return;
+        }
+        const idByName: Record<string, string> = {};
+        const nameById: Record<string, string> = {};
+        for (const row of (data ?? []) as { id: string; full_name: string }[]) {
+          idByName[row.full_name.trim().toLowerCase()] = row.id;
+          nameById[row.id] = row.full_name;
+        }
+        setMemberIdByName(idByName);
+        setMemberNameById(nameById);
+      });
+    return () => {
+      active = false;
+    };
+  }, [company?.id]);
+
+  function assignedToId(name: string | null): string | null {
+    if (!name) return null;
+    return memberIdByName[name.trim().toLowerCase()] ?? null;
+  }
+
   // Load tasks for this program from Supabase, generating + batch-inserting
   // the blueprint's default tasks on first load if none exist yet. Every AI
   // task read back is also mirrored into the lib/tasks.ts localStorage store
@@ -1074,11 +1117,11 @@ export function ProgramDashboard() {
               id: rowId,
               program_id: program.id,
               company_id: company.id,
-              phase_label: t.phaseLabel,
-              task_text: t.taskText,
+              phase: t.phaseLabel,
+              label: t.taskText,
               status: t.status,
               note: t.statusNote,
-              assigned_to: t.assignedTo,
+              assigned_to: assignedToId(t.assignedTo),
               deadline: t.deadline,
               ai_suggested_deadline: t.aiSuggestedDeadline,
               is_custom: false,
@@ -1106,34 +1149,35 @@ export function ProgramDashboard() {
         const aiTasks: TaskState[] = [];
         const custom: CustomTask[] = [];
         for (const row of rows) {
+          const assignedName = row.assigned_to ? memberNameById[row.assigned_to] ?? null : null;
           if (row.is_custom) {
             custom.push({
               id: row.id,
               programId: program.id,
-              phaseLabel: row.phase_label,
-              text: row.task_text,
-              assignedTo: row.assigned_to,
+              phaseLabel: row.phase,
+              text: row.label,
+              assignedTo: assignedName,
               deadline: row.deadline,
               status: row.status,
               statusNote: row.note ?? "",
               createdAt: row.created_at ?? new Date().toISOString(),
             });
           } else {
-            const taskId = getTaskId(row.phase_label, row.task_text);
+            const taskId = getTaskId(row.phase, row.label);
             rowIdByTaskId[taskId] = row.id;
             const taskState: TaskState = {
               programId: program.id,
               taskId,
-              phaseLabel: row.phase_label,
-              taskText: row.task_text,
-              assignedTo: row.assigned_to,
+              phaseLabel: row.phase,
+              taskText: row.label,
+              assignedTo: assignedName,
               deadline: row.deadline,
               aiSuggestedDeadline: row.ai_suggested_deadline,
               status: row.status,
               statusNote: row.note ?? "",
             };
             aiTasks.push(taskState);
-            setTaskState(program.id, row.phase_label, row.task_text, {
+            setTaskState(program.id, row.phase, row.label, {
               assignedTo: taskState.assignedTo,
               deadline: taskState.deadline,
               aiSuggestedDeadline: taskState.aiSuggestedDeadline,
@@ -1243,7 +1287,7 @@ export function ProgramDashboard() {
     const dbPatch: Record<string, unknown> = {};
     if ("status" in patch) dbPatch.status = patch.status;
     if ("statusNote" in patch) dbPatch.note = patch.statusNote;
-    if ("assignedTo" in patch) dbPatch.assigned_to = patch.assignedTo;
+    if ("assignedTo" in patch) dbPatch.assigned_to = assignedToId(patch.assignedTo ?? null);
     if ("deadline" in patch) dbPatch.deadline = patch.deadline;
     return dbPatch;
   }
@@ -1356,11 +1400,11 @@ export function ProgramDashboard() {
           id: newTask.id,
           program_id: program!.id,
           company_id: company.id,
-          phase_label: newTask.phaseLabel,
-          task_text: newTask.text,
+          phase: newTask.phaseLabel,
+          label: newTask.text,
           status: newTask.status,
           note: newTask.statusNote,
-          assigned_to: newTask.assignedTo,
+          assigned_to: assignedToId(newTask.assignedTo),
           deadline: newTask.deadline,
           is_custom: true,
         })
@@ -1437,11 +1481,11 @@ export function ProgramDashboard() {
           id: newTask.id,
           program_id: program!.id,
           company_id: company.id,
-          phase_label: newTask.phaseLabel,
-          task_text: newTask.text,
+          phase: newTask.phaseLabel,
+          label: newTask.text,
           status: newTask.status,
           note: newTask.statusNote,
-          assigned_to: newTask.assignedTo,
+          assigned_to: assignedToId(newTask.assignedTo),
           deadline: newTask.deadline,
           is_custom: true,
         })

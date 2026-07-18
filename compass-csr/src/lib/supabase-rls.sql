@@ -2,6 +2,11 @@
 -- Reference only — these are not executed by the app. Run them manually in
 -- the Supabase SQL editor (Project → SQL Editor) against the target project.
 
+-- Phase 2: programs.notes column (verified missing against the live project
+-- on 2026-07-17 — program-dashboard.tsx's notes migration reads/writes this
+-- column and falls back to localStorage until it exists).
+alter table programs add column if not exists notes jsonb default '[]'::jsonb;
+
 -- Allow users to read their own company
 create policy "Users can view their own company"
 on companies for select

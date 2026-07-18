@@ -722,6 +722,16 @@ Generate the checklist now.`;
     if (upcoming === "In Discussion") {
       void runChecklistGeneration();
     }
+
+    if (partnershipRowId) {
+      supabase
+        .from("partnerships")
+        .update({ partnership_status: STATUS_TO_DB[upcoming] })
+        .eq("id", partnershipRowId)
+        .then(({ error }) => {
+          if (error) console.error("Failed to update partnership status in Supabase:", error);
+        });
+    }
   }
 
   function toggleChecklistItem(itemId: string) {
@@ -773,6 +783,23 @@ Generate the checklist now.`;
     });
     setActivePartnerDialogOpen(false);
     toast.success(`🎉 Active Partnership confirmed with ${nonprofit.name}!`);
+
+    if (partnershipRowId) {
+      supabase
+        .from("partnerships")
+        .update({
+          partnership_status: STATUS_TO_DB["Active Partner"],
+          contact_name: details.contactName || null,
+          contact_email: details.contactEmail || null,
+          partnership_type: details.partnershipType || null,
+          start_date: details.startDate,
+          notes: details.notes || null,
+        })
+        .eq("id", partnershipRowId)
+        .then(({ error }) => {
+          if (error) console.error("Failed to update partnership in Supabase:", error);
+        });
+    }
   }
 
   async function handleGenerateEmail() {
@@ -834,6 +861,16 @@ The email should introduce the company, explain why we're interested in partneri
     setContactName("");
     setEmail("");
     setMessage("");
+
+    if (partnershipRowId && wasExploring) {
+      supabase
+        .from("partnerships")
+        .update({ partnership_status: STATUS_TO_DB[updatedStatus] })
+        .eq("id", partnershipRowId)
+        .then(({ error }) => {
+          if (error) console.error("Failed to update partnership status in Supabase:", error);
+        });
+    }
   }
 
   const currentStepIndex = STATUS_STEPS.indexOf(record.status);
@@ -888,8 +925,13 @@ The email should introduce the company, explain why we're interested in partneri
 
       {/* Status progression bar */}
       <Card className="border-border shadow-sm">
-        <CardHeader className="pb-2">
+        <CardHeader className="pb-2 flex-row items-center justify-between">
           <CardTitle className="text-base">Partnership Status</CardTitle>
+          {partnershipLoading && (
+            <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+              <Sparkles className="h-3.5 w-3.5 animate-pulse" /> Syncing…
+            </span>
+          )}
         </CardHeader>
         <CardContent>
           <div className="flex items-start">
@@ -1271,7 +1313,12 @@ The email should introduce the company, explain why we're interested in partneri
           )}
 
           <div ref={activityLogRef}>
-            <ActivityLogSection storageKey={storageKey} nonprofitName={nonprofit.name} />
+            <ActivityLogSection
+              storageKey={storageKey}
+              nonprofitName={nonprofit.name}
+              partnershipRowId={partnershipRowId}
+              companyId={company?.id ?? null}
+            />
           </div>
         </>
       )}

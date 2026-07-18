@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { Link } from "react-router";
 import { toast } from "sonner";
 import { Card, CardContent } from "../components/ui/card";
@@ -14,9 +14,12 @@ import {
   Award,
   ClipboardList,
   Lightbulb,
+  Sparkles,
   X,
 } from "lucide-react";
 import { usePrograms } from "../context/programs-context";
+import { useAuth } from "../context/auth-context";
+import supabase from "../../lib/supabase";
 import {
   CAUSE_AREAS,
   CAUSE_COLORS,
@@ -141,10 +144,74 @@ function NonprofitCard({
 
 export function NonprofitPartners() {
   const { programs } = usePrograms();
+  const { company } = useAuth();
   const [search, setSearch] = useState("");
   const [activeCause, setActiveCause] = useState("All");
+  // Legacy localStorage mirror — kept only as a Supabase-fetch-failure
+  // fallback and for the "Connected" stat count's local write-through.
   const [connected, setConnected] = useState<string[]>(loadConnected);
   const [showBanner, setShowBanner] = useState(() => shouldShowFeatureBanner("nonprofit-partners"));
+
+  // "Connected" / "Active Partner" state, keyed by lowercased nonprofit name,
+  // sourced live from the Supabase `partnerships` table (company-scoped).
+  // Falls back to the localStorage partnership-status store if the fetch
+  // fails or no company is resolved yet.
+  const [connectedNames, setConnectedNames] = useState<Set<string>>(new Set());
+  const [activePartnerNames, setActivePartnerNames] = useState<Set<string>>(new Set());
+  const [partnershipsLoading, setPartnershipsLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+
+    function useLocalFallback() {
+      const all = loadPartnerships();
+      const nextConnected = new Set<string>();
+      const nextActive = new Set<string>();
+      for (const [key, record] of Object.entries(all)) {
+        const name = (record.nonprofitName ?? key.split("::")[1] ?? "").toLowerCase();
+        if (!name) continue;
+        nextConnected.add(name);
+        if (record.status === "Active Partner") nextActive.add(name);
+      }
+      setConnectedNames(nextConnected);
+      setActivePartnerNames(nextActive);
+      setPartnershipsLoading(false);
+    }
+
+    if (!company?.id) {
+      useLocalFallback();
+      return;
+    }
+
+    setPartnershipsLoading(true);
+    supabase
+      .from("partnerships")
+      .select("nonprofit_name, partnership_status")
+      .eq("company_id", company.id)
+      .then(({ data, error }) => {
+        if (!active) return;
+        if (error) {
+          console.error("Failed to load partnerships from Supabase:", error);
+          useLocalFallback();
+          return;
+        }
+        const rows = (data ?? []) as { nonprofit_name: string; partnership_status: string }[];
+        const nextConnected = new Set<string>();
+        const nextActive = new Set<string>();
+        for (const row of rows) {
+          const key = row.nonprofit_name.toLowerCase();
+          nextConnected.add(key);
+          if (row.partnership_status === "active_partner") nextActive.add(key);
+        }
+        setConnectedNames(nextConnected);
+        setActivePartnerNames(nextActive);
+        setPartnershipsLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [company?.id]);
 
   function handleDismissBanner() {
     dismissRecommendation(DISMISS_KEYS["nonprofit-partners"]);
@@ -166,26 +233,26 @@ export function NonprofitPartners() {
     return [...new Set(suggested)].slice(0, 3);
   }, [programs]);
 
-  // Nonprofits that have reached "Active Partner" status. Matches directly by
-  // nonprofit name across every stored partnership record (same approach as
-  // impact-report.tsx's resolvePartnerships) rather than rebuilding a single
-  // partnershipKey off resolveCompanyName(programs) — that resolves to
-  // whichever program was created most recently, which can silently drift
-  // from the company name a partnership was actually recorded under and
-  // orphan the lookup key whenever more than one program exists.
+  // Nonprofits that have reached "Active Partner" status, matched by name
+  // against the Supabase-sourced (or localStorage-fallback) partnership
+  // state above.
   const activePartnerIds = useMemo(() => {
-    const all = loadPartnerships();
-    const activeNames = new Set(
-      Object.entries(all)
-        .filter(([, record]) => record.status === "Active Partner")
-        .map(([key, record]) => (record.nonprofitName ?? key.split("::")[1] ?? "").toLowerCase()),
-    );
     const ids = new Set<string>();
     for (const n of NONPROFITS) {
-      if (activeNames.has(n.name.toLowerCase())) ids.add(n.id);
+      if (activePartnerNames.has(n.name.toLowerCase())) ids.add(n.id);
     }
     return ids;
-  }, []);
+  }, [activePartnerNames]);
+
+  // "Connected" = any partnerships row exists for this company + nonprofit,
+  // even at "Exploring" status.
+  const connectedIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const n of NONPROFITS) {
+      if (connectedNames.has(n.name.toLowerCase())) ids.add(n.id);
+    }
+    return ids;
+  }, [connectedNames]);
 
   const activePartnerNonprofits = useMemo(
     () => NONPROFITS.filter((n) => activePartnerIds.has(n.id)),
@@ -212,18 +279,32 @@ export function NonprofitPartners() {
 
   function handleConnect(id: string) {
     const nonprofit = NONPROFITS.find((n) => n.id === id);
-    const isConnecting = !connected.includes(id);
-    const updated = isConnecting
-      ? [...connected, id]
-      : connected.filter((c) => c !== id);
-    setConnected(updated);
-    saveConnected(updated);
-
     if (!nonprofit) return;
-    if (isConnecting) {
-      toast.success(`Connected with ${nonprofit.name} ✓`);
-    } else {
-      toast(`Disconnected from ${nonprofit.name}`);
+    const key = nonprofit.name.toLowerCase();
+
+    if (connectedNames.has(key)) {
+      // No DELETE policy exists for the partnerships table, so once a
+      // connection is recorded it can't be undone here — "Connect" is a
+      // one-directional action.
+      toast(`${nonprofit.name} is already connected`);
+      return;
+    }
+
+    // Optimistic update — reflect the new connection immediately, plus a
+    // localStorage mirror kept for fallback/legacy parity.
+    setConnectedNames((prev) => new Set(prev).add(key));
+    const updatedLegacy = [...connected, id];
+    setConnected(updatedLegacy);
+    saveConnected(updatedLegacy);
+    toast.success(`Connected with ${nonprofit.name} ✓`);
+
+    if (company?.id) {
+      supabase
+        .from("partnerships")
+        .insert({ company_id: company.id, nonprofit_name: nonprofit.name, partnership_status: "exploring" })
+        .then(({ error }) => {
+          if (error) console.error("Failed to create partnership in Supabase:", error);
+        });
     }
   }
 
@@ -264,8 +345,14 @@ export function NonprofitPartners() {
         </div>
         <div className="h-8 w-px bg-border" />
         <div className="text-center">
-          <p className="text-2xl font-semibold text-foreground">{connected.length}</p>
-          <p className="text-xs text-muted-foreground">Connected</p>
+          <p className="text-2xl font-semibold text-foreground">{connectedIds.size}</p>
+          <p className="text-xs text-muted-foreground">
+            Connected{partnershipsLoading && (
+              <span className="inline-flex items-center gap-1 ml-1.5 text-muted-foreground/70">
+                <Sparkles className="h-3 w-3 animate-pulse" /> syncing…
+              </span>
+            )}
+          </p>
         </div>
         <div className="h-8 w-px bg-border" />
         <div className="text-center">
@@ -307,7 +394,7 @@ export function NonprofitPartners() {
               <NonprofitCard
                 key={n.id}
                 nonprofit={n}
-                connected={connected.includes(n.id)}
+                connected={connectedIds.has(n.id)}
                 onConnect={handleConnect}
                 featured
                 isActivePartner={activePartnerIds.has(n.id)}
@@ -369,7 +456,7 @@ export function NonprofitPartners() {
               <NonprofitCard
                 key={n.id}
                 nonprofit={n}
-                connected={connected.includes(n.id)}
+                connected={connectedIds.has(n.id)}
                 onConnect={handleConnect}
                 isActivePartner={activePartnerIds.has(n.id)}
               />
